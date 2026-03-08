@@ -1,6 +1,14 @@
 import { useCallback, useSyncExternalStore } from "react";
 import { Option, Schema } from "effect";
-import { type ProviderKind, type ProviderServiceTier } from "@t3tools/contracts";
+import {
+  BackendSelection,
+  MAX_REMOTE_BACKEND_PROFILES,
+  RemoteBackendProfile,
+  type BackendSelection as BackendSelectionValue,
+  type ProviderKind,
+  type ProviderServiceTier,
+  type RemoteBackendProfile as RemoteBackendProfileValue,
+} from "@t3tools/contracts";
 import { getDefaultModel, getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
 
 const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
@@ -41,9 +49,17 @@ const AppSettingsSchema = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(false)),
   ),
-  codexServiceTier: AppServiceTierSchema.pipe(Schema.withConstructorDefault(() => Option.some("auto"))),
+  codexServiceTier: AppServiceTierSchema.pipe(
+    Schema.withConstructorDefault(() => Option.some("auto")),
+  ),
   customCodexModels: Schema.Array(Schema.String).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
+  ),
+  remoteBackendProfiles: Schema.Array(RemoteBackendProfile).pipe(
+    Schema.withConstructorDefault(() => Option.some([])),
+  ),
+  backendSelection: BackendSelection.pipe(
+    Schema.withConstructorDefault(() => Option.some(BackendSelection.makeUnsafe({}))),
   ),
 });
 export type AppSettings = typeof AppSettingsSchema.Type;
@@ -105,10 +121,62 @@ export function normalizeCustomModelSlugs(
 }
 
 function normalizeAppSettings(settings: AppSettings): AppSettings {
+  const remoteBackendProfiles = normalizeRemoteBackendProfiles(settings.remoteBackendProfiles);
+  const backendSelection = normalizeBackendSelection(
+    settings.backendSelection,
+    remoteBackendProfiles,
+  );
   return {
     ...settings,
     customCodexModels: normalizeCustomModelSlugs(settings.customCodexModels, "codex"),
+    remoteBackendProfiles,
+    backendSelection,
   };
+}
+
+export function normalizeRemoteBackendProfiles(
+  profiles: Iterable<RemoteBackendProfileValue | null | undefined>,
+): RemoteBackendProfileValue[] {
+  const normalizedProfiles: RemoteBackendProfileValue[] = [];
+  const seenIds = new Set<string>();
+
+  for (const candidate of profiles) {
+    if (!candidate) {
+      continue;
+    }
+
+    const decoded = Schema.decodeUnknownOption(RemoteBackendProfile)(candidate);
+    if (decoded._tag === "None" || seenIds.has(decoded.value.id)) {
+      continue;
+    }
+
+    seenIds.add(decoded.value.id);
+    normalizedProfiles.push(decoded.value);
+    if (normalizedProfiles.length >= MAX_REMOTE_BACKEND_PROFILES) {
+      break;
+    }
+  }
+
+  return normalizedProfiles;
+}
+
+export function normalizeBackendSelection(
+  selection: BackendSelectionValue,
+  profiles: readonly RemoteBackendProfileValue[],
+): BackendSelectionValue {
+  const decoded = Schema.decodeUnknownOption(BackendSelection)(selection);
+  if (decoded._tag === "None") {
+    return BackendSelection.makeUnsafe({});
+  }
+
+  if (decoded.value.mode === "remote") {
+    const selectedProfile = profiles.find((profile) => profile.id === decoded.value.profileId);
+    if (!selectedProfile) {
+      return BackendSelection.makeUnsafe({});
+    }
+  }
+
+  return decoded.value;
 }
 
 export function getAppModelOptions(

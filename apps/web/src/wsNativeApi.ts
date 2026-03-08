@@ -12,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 import { Cause, Schema } from "effect";
 
+import { resolveBackendConnection } from "./backendConnection";
 import { showContextMenuFallback } from "./contextMenuFallback";
 import { WsTransport } from "./wsTransport";
 
@@ -84,7 +85,7 @@ export function onServerConfigUpdated(
 export function createWsNativeApi(): NativeApi {
   if (instance) return instance.api;
 
-  const transport = new WsTransport();
+  const transport = new WsTransport(resolveBackendConnection().wsUrl);
 
   // Listen for server welcome and forward to registered listeners.
   // Also cache it so late subscribers (React effects) get it immediately.
@@ -205,4 +206,11 @@ export function createWsNativeApi(): NativeApi {
 
   instance = { api, transport };
   return api;
+}
+
+export function disposeWsNativeApi(): void {
+  instance?.transport.dispose();
+  instance = null;
+  lastWelcome = null;
+  lastServerConfigUpdated = null;
 }

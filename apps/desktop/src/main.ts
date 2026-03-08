@@ -7,7 +7,12 @@ import * as Path from "node:path";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, shell } from "electron";
 import type { MenuItemConstructorOptions } from "electron";
 import * as Effect from "effect/Effect";
-import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/contracts";
+import type {
+  DesktopShellBackendConnection,
+  DesktopStartupRole,
+  DesktopUpdateActionResult,
+  DesktopUpdateState,
+} from "@t3tools/contracts";
 import { autoUpdater } from "electron-updater";
 
 import type { ContextMenuItem } from "@t3tools/contracts";
@@ -15,10 +20,7 @@ import { NetService } from "@t3tools/shared/Net";
 import { RotatingFileSink } from "@t3tools/shared/logging";
 import { showDesktopConfirmDialog } from "./confirmDialog";
 import { fixPath } from "./fixPath";
-import {
-  getAutoUpdateDisabledReason,
-  shouldBroadcastDownloadProgress,
-} from "./updateState";
+import { getAutoUpdateDisabledReason, shouldBroadcastDownloadProgress } from "./updateState";
 import {
   createInitialDesktopUpdateState,
   reduceDesktopUpdateStateOnCheckFailure,
@@ -35,6 +37,8 @@ import {
 fixPath();
 
 const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
+const BACKEND_CONNECTION_GET_CHANNEL = "desktop:backend-connection:get";
+const BACKEND_CONNECTION_SET_CHANNEL = "desktop:backend-connection:set";
 const CONFIRM_CHANNEL = "desktop:confirm";
 const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
 const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
@@ -45,6 +49,7 @@ const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
 const STATE_DIR =
   process.env.T3CODE_STATE_DIR?.trim() || Path.join(OS.homedir(), ".t3", "userdata");
+const DESKTOP_SHELL_STATE_PATH = Path.join(STATE_DIR, "desktop-shell.json");
 const DESKTOP_SCHEME = "t3";
 const ROOT_DIR = Path.resolve(__dirname, "../../..");
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -58,25 +63,31 @@ const LOG_FILE_MAX_FILES = 10;
 const APP_RUN_ID = Crypto.randomBytes(6).toString("hex");
 const AUTO_UPDATE_STARTUP_DELAY_MS = 15_000;
 const AUTO_UPDATE_POLL_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const FRONTEND_ONLY_PLACEHOLDER_WS_URL = "ws://127.0.0.1:3773";
 
 type DesktopUpdateErrorContext = DesktopUpdateState["errorContext"];
 
 let mainWindow: BrowserWindow | null = null;
 let backendProcess: ChildProcess.ChildProcess | null = null;
 let backendPort = 0;
-let backendAuthToken = "";
+let localBackendAuthToken = "";
+let localBackendWsUrl = "";
+let localBackendBindHost = "127.0.0.1";
 let backendWsUrl = "";
 let restartAttempt = 0;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
 let isQuitting = false;
+let currentStartupRole: DesktopStartupRole = "both";
 let desktopProtocolRegistered = false;
 let aboutCommitHashCache: string | null | undefined;
 let desktopLogSink: RotatingFileSink | null = null;
 let backendLogSink: RotatingFileSink | null = null;
 let restoreStdIoCapture: (() => void) | null = null;
+let shellBackendConnection = readDesktopShellBackendConnection();
 
 let destructiveMenuIconCache: Electron.NativeImage | null | undefined;
-const initialUpdateState = (): DesktopUpdateState => createInitialDesktopUpdateState(app.getVersion());
+const initialUpdateState = (): DesktopUpdateState =>
+  createInitialDesktopUpdateState(app.getVersion());
 
 function logTimestamp(): string {
   return new Date().toISOString();
@@ -325,6 +336,78 @@ function resolveAboutCommitHash(): string | null {
 
 function resolveBackendEntry(): string {
   return Path.join(resolveAppRoot(), "apps/server/dist/index.mjs");
+}
+
+function normalizeDesktopShellBackendConnection(input: unknown): DesktopShellBackendConnection {
+  if (typeof input !== "object" || input === null) {
+    return { mode: "local", remoteWsUrl: null };
+  }
+
+  const record = input as Record<string, unknown>;
+  const mode = record.mode === "remote" ? "remote" : "local";
+  const remoteWsUrl =
+    typeof record.remoteWsUrl === "string" && record.remoteWsUrl.trim().length > 0
+      ? record.remoteWsUrl.trim()
+      : null;
+
+  if (mode === "remote" && remoteWsUrl === null) {
+    return { mode: "local", remoteWsUrl: null };
+  }
+
+  return { mode, remoteWsUrl };
+}
+
+function readDesktopShellBackendConnection(): DesktopShellBackendConnection {
+  try {
+    if (!FS.existsSync(DESKTOP_SHELL_STATE_PATH)) {
+      return { mode: "local", remoteWsUrl: null };
+    }
+    const raw = FS.readFileSync(DESKTOP_SHELL_STATE_PATH, "utf8");
+    return normalizeDesktopShellBackendConnection(JSON.parse(raw));
+  } catch {
+    return { mode: "local", remoteWsUrl: null };
+  }
+}
+
+function persistDesktopShellBackendConnection(
+  connection: DesktopShellBackendConnection,
+): DesktopShellBackendConnection {
+  const normalized = normalizeDesktopShellBackendConnection(connection);
+  try {
+    FS.mkdirSync(STATE_DIR, { recursive: true });
+    FS.writeFileSync(DESKTOP_SHELL_STATE_PATH, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  } catch (error) {
+    writeDesktopLogHeader(
+      `failed to persist desktop shell backend connection message=${formatErrorMessage(error)}`,
+    );
+  }
+  shellBackendConnection = normalized;
+  return normalized;
+}
+
+async function promptStartupRole(): Promise<DesktopStartupRole | null> {
+  const result = await dialog.showMessageBox({
+    type: "question",
+    buttons: ["Frontend Only", "Backend Only", "Both", "Quit"],
+    defaultId: 2,
+    cancelId: 3,
+    noLink: true,
+    title: APP_DISPLAY_NAME,
+    message: "Choose how this app should start.",
+    detail:
+      "Frontend Only opens the shell without starting a local backend. Backend Only runs the local backend headless. Both starts the local backend and opens the shell.",
+  });
+
+  switch (result.response) {
+    case 0:
+      return "frontend-only";
+    case 1:
+      return "backend-only";
+    case 2:
+      return "both";
+    default:
+      return null;
+  }
 }
 
 function resolveBackendCwd(): string {
@@ -644,7 +727,9 @@ async function checkForUpdates(reason: string): Promise<void> {
     await autoUpdater.checkForUpdates();
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    setUpdateState(reduceDesktopUpdateStateOnCheckFailure(updateState, message, new Date().toISOString()));
+    setUpdateState(
+      reduceDesktopUpdateStateOnCheckFailure(updateState, message, new Date().toISOString()),
+    );
     console.error(`[desktop-updater] Failed to check for updates: ${message}`);
   } finally {
     updateCheckInFlight = false;
@@ -705,9 +790,7 @@ function configureAutoUpdater(): void {
   updaterConfigured = true;
 
   const githubToken =
-    process.env.T3CODE_DESKTOP_UPDATE_GITHUB_TOKEN?.trim() ||
-    process.env.GH_TOKEN?.trim() ||
-    "";
+    process.env.T3CODE_DESKTOP_UPDATE_GITHUB_TOKEN?.trim() || process.env.GH_TOKEN?.trim() || "";
   if (githubToken) {
     // When a token is provided, re-configure the feed with `private: true` so
     // electron-updater uses the GitHub API (api.github.com) instead of the
@@ -732,7 +815,13 @@ function configureAutoUpdater(): void {
     console.info("[desktop-updater] Looking for updates...");
   });
   autoUpdater.on("update-available", (info) => {
-    setUpdateState(reduceDesktopUpdateStateOnUpdateAvailable(updateState, info.version, new Date().toISOString()));
+    setUpdateState(
+      reduceDesktopUpdateStateOnUpdateAvailable(
+        updateState,
+        info.version,
+        new Date().toISOString(),
+      ),
+    );
     lastLoggedDownloadMilestone = -1;
     console.info(`[desktop-updater] Update available: ${info.version}`);
   });
@@ -788,14 +877,78 @@ function configureAutoUpdater(): void {
   updatePollTimer.unref();
 }
 function backendEnv(): NodeJS.ProcessEnv {
-  return {
+  const nextEnv: NodeJS.ProcessEnv = {
     ...process.env,
     T3CODE_MODE: "desktop",
     T3CODE_NO_BROWSER: "1",
+    T3CODE_HOST: localBackendBindHost,
     T3CODE_PORT: String(backendPort),
     T3CODE_STATE_DIR: STATE_DIR,
-    T3CODE_AUTH_TOKEN: backendAuthToken,
   };
+
+  if (localBackendAuthToken.length > 0) {
+    nextEnv.T3CODE_AUTH_TOKEN = localBackendAuthToken;
+  } else {
+    delete nextEnv.T3CODE_AUTH_TOKEN;
+  }
+
+  return nextEnv;
+}
+
+async function ensureLocalBackendConnectionReady(): Promise<void> {
+  if (localBackendWsUrl.length > 0) {
+    return;
+  }
+
+  backendPort = await Effect.service(NetService).pipe(
+    Effect.flatMap((net) => net.reserveLoopbackPort()),
+    Effect.provide(NetService.layer),
+    Effect.runPromise,
+  );
+  // Local backend hosting should behave the same whether the desktop shell is
+  // opened alongside it or not, so "both" remains reachable from other shells.
+  localBackendBindHost = "0.0.0.0";
+  localBackendAuthToken = "";
+  localBackendWsUrl = `ws://127.0.0.1:${backendPort}`;
+  writeDesktopLogHeader(`prepared local backend websocket url=${localBackendWsUrl}`);
+}
+
+async function applyDesktopShellBackendConnection(
+  connection: DesktopShellBackendConnection,
+  options?: { persist?: boolean },
+): Promise<DesktopShellBackendConnection> {
+  const normalized =
+    options?.persist === false
+      ? normalizeDesktopShellBackendConnection(connection)
+      : persistDesktopShellBackendConnection(connection);
+
+  if (currentStartupRole === "frontend-only") {
+    await stopBackendAndWaitForExit();
+    backendWsUrl =
+      normalized.mode === "remote" && normalized.remoteWsUrl
+        ? normalized.remoteWsUrl
+        : FRONTEND_ONLY_PLACEHOLDER_WS_URL;
+    process.env.T3CODE_DESKTOP_WS_URL = backendWsUrl;
+    writeDesktopLogHeader(
+      `desktop startup role=frontend-only activeWsUrl=${backendWsUrl} selectedMode=${normalized.mode}`,
+    );
+    return normalized;
+  }
+
+  await ensureLocalBackendConnectionReady();
+  startBackend();
+
+  if (normalized.mode === "remote" && normalized.remoteWsUrl) {
+    backendWsUrl = normalized.remoteWsUrl;
+    process.env.T3CODE_DESKTOP_WS_URL = backendWsUrl;
+    writeDesktopLogHeader(`desktop backend mode=remote wsUrl=${backendWsUrl}`);
+    return normalized;
+  }
+
+  backendWsUrl = localBackendWsUrl;
+  process.env.T3CODE_DESKTOP_WS_URL = backendWsUrl;
+  writeDesktopLogHeader(`desktop backend mode=local wsUrl=${backendWsUrl}`);
+  return normalized;
 }
 
 function scheduleBackendRestart(reason: string): void {
@@ -941,6 +1094,14 @@ async function stopBackendAndWaitForExit(timeoutMs = 5_000): Promise<void> {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.removeHandler(BACKEND_CONNECTION_GET_CHANNEL);
+  ipcMain.handle(BACKEND_CONNECTION_GET_CHANNEL, async () => shellBackendConnection);
+
+  ipcMain.removeHandler(BACKEND_CONNECTION_SET_CHANNEL);
+  ipcMain.handle(BACKEND_CONNECTION_SET_CHANNEL, async (_event, input: unknown) =>
+    applyDesktopShellBackendConnection(normalizeDesktopShellBackendConnection(input)),
+  );
+
   ipcMain.removeHandler(PICK_FOLDER_CHANNEL);
   ipcMain.handle(PICK_FOLDER_CHANNEL, async () => {
     const owner = BrowserWindow.getFocusedWindow() ?? mainWindow;
@@ -1142,23 +1303,30 @@ configureAppIdentity();
 
 async function bootstrap(): Promise<void> {
   writeDesktopLogHeader("bootstrap start");
-  backendPort = await Effect.service(NetService).pipe(
-    Effect.flatMap((net) => net.reserveLoopbackPort()),
-    Effect.provide(NetService.layer),
-    Effect.runPromise,
-  );
-  writeDesktopLogHeader(`reserved backend port via NetService port=${backendPort}`);
-  backendAuthToken = Crypto.randomBytes(24).toString("hex");
-  backendWsUrl = `ws://127.0.0.1:${backendPort}/?token=${encodeURIComponent(backendAuthToken)}`;
-  process.env.T3CODE_DESKTOP_WS_URL = backendWsUrl;
-  writeDesktopLogHeader(`bootstrap resolved websocket url=${backendWsUrl}`);
-
   registerIpcHandlers();
   writeDesktopLogHeader("bootstrap ipc handlers registered");
-  startBackend();
-  writeDesktopLogHeader("bootstrap backend start requested");
-  mainWindow = createWindow();
-  writeDesktopLogHeader("bootstrap main window created");
+  await applyDesktopShellBackendConnection(
+    currentStartupRole === "frontend-only"
+      ? shellBackendConnection
+      : { mode: "local", remoteWsUrl: null },
+    { persist: false },
+  );
+  writeDesktopLogHeader("bootstrap backend connection applied");
+  if (currentStartupRole !== "backend-only") {
+    mainWindow = createWindow();
+    writeDesktopLogHeader("bootstrap main window created");
+    return;
+  }
+
+  await dialog.showMessageBox({
+    type: "info",
+    buttons: ["OK"],
+    defaultId: 0,
+    noLink: true,
+    title: APP_DISPLAY_NAME,
+    message: "Backend is running headless.",
+    detail: `The local backend is listening on port ${backendPort}. Connect another shell to this Mac's network address on that port.`,
+  });
 }
 
 app.on("before-quit", () => {
@@ -1171,8 +1339,15 @@ app.on("before-quit", () => {
 
 app
   .whenReady()
-  .then(() => {
+  .then(async () => {
     writeDesktopLogHeader("app ready");
+    const startupRole = await promptStartupRole();
+    if (!startupRole) {
+      app.quit();
+      return;
+    }
+    currentStartupRole = startupRole;
+    process.env.T3CODE_DESKTOP_STARTUP_ROLE = currentStartupRole;
     configureAppIdentity();
     configureApplicationMenu();
     registerDesktopProtocol();
@@ -1182,7 +1357,7 @@ app
     });
 
     app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
+      if (currentStartupRole !== "backend-only" && BrowserWindow.getAllWindows().length === 0) {
         mainWindow = createWindow();
       }
     });

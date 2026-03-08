@@ -40,6 +40,7 @@ import type {
   OrchestrationEvent,
   OrchestrationReadModel,
 } from "./orchestration";
+import type { DesktopShellBackendConnection, DesktopStartupRole } from "./connection";
 import { EditorId } from "./editor";
 
 export interface ContextMenuItem<T extends string = string> {
@@ -79,6 +80,11 @@ export interface DesktopUpdateActionResult {
 
 export interface DesktopBridge {
   getWsUrl: () => string | null;
+  getStartupRole: () => DesktopStartupRole;
+  getBackendConnection: () => Promise<DesktopShellBackendConnection>;
+  setBackendConnection: (
+    connection: DesktopShellBackendConnection,
+  ) => Promise<DesktopShellBackendConnection>;
   pickFolder: () => Promise<string | null>;
   confirm: (message: string) => Promise<boolean>;
   showContextMenu: <T extends string>(

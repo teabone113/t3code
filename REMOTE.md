@@ -2,6 +2,10 @@
 
 Use this when you want to open T3 Code from another device (phone, tablet, another laptop).
 
+The app now also supports manual remote backend profiles in Settings. For v1 these are intended for
+trusted networks only. Enter the server's host and port inside the shell, then reconnect the shell
+to that backend.
+
 ## CLI ↔ Env option map
 
 The T3 Code CLI accepts the following configuration options, available either as CLI flags or environment variables:
@@ -47,6 +51,8 @@ Notes:
 - `--host 0.0.0.0` listens on all IPv4 interfaces.
 - `--no-browser` prevents local auto-open, which is usually better for headless/remote sessions.
 - Ensure your OS firewall allows inbound TCP on the selected port.
+- In the browser shell, Electron shell, and iPad shell, you can save this endpoint as a remote
+  backend profile from Settings and reconnect to it later.
 
 ## 2) Tailnet / Tailscale access
 

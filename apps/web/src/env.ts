@@ -6,3 +6,10 @@
 export const isElectron =
   typeof window !== "undefined" &&
   (window.desktopBridge !== undefined || window.nativeApi !== undefined);
+
+export const isCapacitor =
+  typeof window !== "undefined" &&
+  typeof (window as Window & { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor
+    ?.isNativePlatform === "function" &&
+  (window as Window & { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor!
+    .isNativePlatform!();

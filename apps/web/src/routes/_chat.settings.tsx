@@ -1,24 +1,39 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
-import { type ProviderKind } from "@t3tools/contracts";
+import {
+  BackendSelection,
+  type BackendProtocol,
+  type ProviderKind,
+  type RemoteBackendProfile,
+} from "@t3tools/contracts";
 import { getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
 import { ZapIcon } from "lucide-react";
 
 import {
   APP_SERVICE_TIER_OPTIONS,
+  type AppSettings,
+  normalizeBackendSelection,
+  normalizeRemoteBackendProfiles,
   MAX_CUSTOM_MODEL_LENGTH,
   shouldShowFastTierIcon,
   useAppSettings,
 } from "../appSettings";
-import { isElectron } from "../env";
+import { buildRemoteBackendWsUrl, resolveBackendConnection } from "../backendConnection";
+import { isCapacitor, isElectron } from "../env";
 import { useTheme } from "../hooks/useTheme";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
-import { ensureNativeApi } from "../nativeApi";
+import { ensureNativeApi, resetNativeApi } from "../nativeApi";
 import { preferredTerminalEditor } from "../terminal-links";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../components/ui/select";
+import {
+  Select,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
 import { Switch } from "../components/ui/switch";
 import { SidebarInset } from "~/components/ui/sidebar";
 
@@ -39,6 +54,49 @@ const THEME_OPTIONS = [
     description: "Always use the dark theme.",
   },
 ] as const;
+
+function createBackendProfileId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `backend-${crypto.randomUUID().slice(0, 8).toLowerCase()}`;
+  }
+  return `backend-${Date.now().toString(36)}`;
+}
+
+function resolveBackendSelectionLabel(
+  selection: AppSettings["backendSelection"],
+  profiles: readonly RemoteBackendProfile[],
+): string {
+  if (selection.mode !== "remote") {
+    return "Local backend";
+  }
+
+  return profiles.find((profile) => profile.id === selection.profileId)?.name ?? "Remote backend";
+}
+
+async function syncDesktopBackendSelection(
+  selection: AppSettings["backendSelection"],
+  profiles: readonly RemoteBackendProfile[],
+): Promise<void> {
+  if (!window.desktopBridge?.setBackendConnection) {
+    return;
+  }
+
+  const activeProfile =
+    selection.mode === "remote"
+      ? (profiles.find((profile) => profile.id === selection.profileId) ?? null)
+      : null;
+  await window.desktopBridge.setBackendConnection(
+    activeProfile
+      ? {
+          mode: "remote",
+          remoteWsUrl: buildRemoteBackendWsUrl(activeProfile),
+        }
+      : {
+          mode: "local",
+          remoteWsUrl: null,
+        },
+  );
+}
 
 const MODEL_PROVIDER_SETTINGS: Array<{
   provider: ProviderKind;
@@ -100,11 +158,25 @@ function SettingsRouteView() {
   const [customModelErrorByProvider, setCustomModelErrorByProvider] = useState<
     Partial<Record<ProviderKind, string | null>>
   >({});
+  const [remoteProfileName, setRemoteProfileName] = useState("");
+  const [remoteProfileHost, setRemoteProfileHost] = useState("");
+  const [remoteProfilePort, setRemoteProfilePort] = useState("3773");
+  const [remoteProfileProtocol, setRemoteProfileProtocol] = useState<BackendProtocol>("ws");
+  const [remoteProfileError, setRemoteProfileError] = useState<string | null>(null);
+  const [isApplyingBackendConnection, setIsApplyingBackendConnection] = useState(false);
 
   const codexBinaryPath = settings.codexBinaryPath;
   const codexHomePath = settings.codexHomePath;
   const codexServiceTier = settings.codexServiceTier;
   const keybindingsConfigPath = serverConfigQuery.data?.keybindingsConfigPath ?? null;
+  const remoteBackendProfiles = settings.remoteBackendProfiles;
+  const activeBackendConnection = resolveBackendConnection();
+  const startupRole = window.desktopBridge?.getStartupRole?.() ?? null;
+  const isFrontendOnlyShell = isCapacitor || startupRole === "frontend-only";
+  const activeBackendLabel = resolveBackendSelectionLabel(
+    settings.backendSelection,
+    remoteBackendProfiles,
+  );
 
   const openKeybindingsFile = useCallback(() => {
     if (!keybindingsConfigPath) return;
@@ -123,54 +195,161 @@ function SettingsRouteView() {
       });
   }, [keybindingsConfigPath]);
 
-  const addCustomModel = useCallback((provider: ProviderKind) => {
-    const customModelInput = customModelInputByProvider[provider];
-    const customModels = getCustomModelsForProvider(settings, provider);
-    const normalized = normalizeModelSlug(customModelInput, provider);
-    if (!normalized) {
-      setCustomModelErrorByProvider((existing) => ({
-        ...existing,
-        [provider]: "Enter a model slug.",
-      }));
+  const applyBackendConnection = useCallback(
+    async (
+      backendSelection: typeof settings.backendSelection,
+      profiles: readonly RemoteBackendProfile[],
+    ) => {
+      const normalizedProfiles = normalizeRemoteBackendProfiles(profiles);
+      const normalizedSelection = normalizeBackendSelection(backendSelection, normalizedProfiles);
+      setIsApplyingBackendConnection(true);
+      updateSettings({
+        remoteBackendProfiles: normalizedProfiles,
+        backendSelection: normalizedSelection,
+      });
+      try {
+        await syncDesktopBackendSelection(normalizedSelection, normalizedProfiles);
+      } finally {
+        resetNativeApi();
+        window.location.reload();
+      }
+    },
+    [updateSettings],
+  );
+
+  const saveRemoteBackendProfile = useCallback(() => {
+    const name = remoteProfileName.trim();
+    const host = remoteProfileHost.trim();
+    const portNumber = Number.parseInt(remoteProfilePort.trim(), 10);
+
+    if (!name) {
+      setRemoteProfileError("Enter a profile name.");
       return;
     }
-    if (getModelOptions(provider).some((option) => option.slug === normalized)) {
-      setCustomModelErrorByProvider((existing) => ({
-        ...existing,
-        [provider]: "That model is already built in.",
-      }));
+    if (!host) {
+      setRemoteProfileError("Enter a backend host or IP address.");
       return;
     }
-    if (normalized.length > MAX_CUSTOM_MODEL_LENGTH) {
-      setCustomModelErrorByProvider((existing) => ({
-        ...existing,
-        [provider]: `Model slugs must be ${MAX_CUSTOM_MODEL_LENGTH} characters or less.`,
-      }));
-      return;
-    }
-    if (customModels.includes(normalized)) {
-      setCustomModelErrorByProvider((existing) => ({
-        ...existing,
-        [provider]: "That custom model is already saved.",
-      }));
+    if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65_535) {
+      setRemoteProfileError("Enter a valid backend port between 1 and 65535.");
       return;
     }
 
-    updateSettings(patchCustomModels(provider, [...customModels, normalized]));
-    setCustomModelInputByProvider((existing) => ({
-      ...existing,
-      [provider]: "",
-    }));
-    setCustomModelErrorByProvider((existing) => ({
-      ...existing,
-      [provider]: null,
-    }));
-  }, [customModelInputByProvider, settings, updateSettings]);
+    const nextProfiles = normalizeRemoteBackendProfiles([
+      ...remoteBackendProfiles,
+      {
+        id: createBackendProfileId(),
+        name,
+        host,
+        port: portNumber,
+        protocol: remoteProfileProtocol,
+      },
+    ]);
+
+    updateSettings({ remoteBackendProfiles: nextProfiles });
+    setRemoteProfileName("");
+    setRemoteProfileHost("");
+    setRemoteProfilePort("3773");
+    setRemoteProfileProtocol("ws");
+    setRemoteProfileError(null);
+  }, [
+    remoteBackendProfiles,
+    remoteProfileHost,
+    remoteProfileName,
+    remoteProfilePort,
+    remoteProfileProtocol,
+    updateSettings,
+  ]);
+
+  const activateLocalBackend = useCallback(() => {
+    void applyBackendConnection(BackendSelection.makeUnsafe({}), remoteBackendProfiles);
+  }, [applyBackendConnection, remoteBackendProfiles]);
+
+  const activateRemoteBackend = useCallback(
+    (profileId: string) => {
+      void applyBackendConnection(
+        {
+          mode: "remote",
+          profileId,
+        },
+        remoteBackendProfiles,
+      );
+    },
+    [applyBackendConnection, remoteBackendProfiles],
+  );
+
+  const removeRemoteBackendProfile = useCallback(
+    (profileId: string) => {
+      const nextProfiles = remoteBackendProfiles.filter((profile) => profile.id !== profileId);
+      if (
+        settings.backendSelection.mode === "remote" &&
+        settings.backendSelection.profileId === profileId
+      ) {
+        void applyBackendConnection(BackendSelection.makeUnsafe({}), nextProfiles);
+        return;
+      }
+
+      updateSettings({ remoteBackendProfiles: nextProfiles });
+    },
+    [applyBackendConnection, remoteBackendProfiles, settings.backendSelection, updateSettings],
+  );
+
+  const addCustomModel = useCallback(
+    (provider: ProviderKind) => {
+      const customModelInput = customModelInputByProvider[provider];
+      const customModels = getCustomModelsForProvider(settings, provider);
+      const normalized = normalizeModelSlug(customModelInput, provider);
+      if (!normalized) {
+        setCustomModelErrorByProvider((existing) => ({
+          ...existing,
+          [provider]: "Enter a model slug.",
+        }));
+        return;
+      }
+      if (getModelOptions(provider).some((option) => option.slug === normalized)) {
+        setCustomModelErrorByProvider((existing) => ({
+          ...existing,
+          [provider]: "That model is already built in.",
+        }));
+        return;
+      }
+      if (normalized.length > MAX_CUSTOM_MODEL_LENGTH) {
+        setCustomModelErrorByProvider((existing) => ({
+          ...existing,
+          [provider]: `Model slugs must be ${MAX_CUSTOM_MODEL_LENGTH} characters or less.`,
+        }));
+        return;
+      }
+      if (customModels.includes(normalized)) {
+        setCustomModelErrorByProvider((existing) => ({
+          ...existing,
+          [provider]: "That custom model is already saved.",
+        }));
+        return;
+      }
+
+      updateSettings(patchCustomModels(provider, [...customModels, normalized]));
+      setCustomModelInputByProvider((existing) => ({
+        ...existing,
+        [provider]: "",
+      }));
+      setCustomModelErrorByProvider((existing) => ({
+        ...existing,
+        [provider]: null,
+      }));
+    },
+    [customModelInputByProvider, settings, updateSettings],
+  );
 
   const removeCustomModel = useCallback(
     (provider: ProviderKind, slug: string) => {
       const customModels = getCustomModelsForProvider(settings, provider);
-      updateSettings(patchCustomModels(provider, customModels.filter((model) => model !== slug)));
+      updateSettings(
+        patchCustomModels(
+          provider,
+          customModels.filter((model) => model !== slug),
+        ),
+      );
       setCustomModelErrorByProvider((existing) => ({
         ...existing,
         [provider]: null,
@@ -198,6 +377,206 @@ function SettingsRouteView() {
                 Configure app-level preferences for this device.
               </p>
             </header>
+
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-4">
+                <h2 className="text-sm font-medium text-foreground">Backend Connection</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Choose whether this shell talks to its default local backend or a saved remote
+                  backend. Remote profiles are intended for trusted LAN, VPN, or Tailnet access in
+                  this v1.
+                </p>
+                {isFrontendOnlyShell ? (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    This shell is running in frontend-only mode. It does not start a local backend,
+                    so connect it to a saved remote backend profile.
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="space-y-4">
+                <div className="rounded-xl border border-border bg-background/60 p-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium text-foreground">{activeBackendLabel}</p>
+                      <p className="text-xs text-muted-foreground">
+                        Active endpoint:{" "}
+                        <code className="text-foreground">{activeBackendConnection.wsUrl}</code>
+                      </p>
+                    </div>
+                    {!isFrontendOnlyShell ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={
+                          isApplyingBackendConnection || settings.backendSelection.mode === "local"
+                        }
+                        onClick={activateLocalBackend}
+                      >
+                        {isApplyingBackendConnection && settings.backendSelection.mode === "remote"
+                          ? "Switching..."
+                          : "Use local backend"}
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-border bg-background/50 p-4">
+                  <div className="mb-4">
+                    <h3 className="text-sm font-medium text-foreground">Saved remote profiles</h3>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Enter a backend host and port manually. Discovery, broker setup, and auth are
+                      intentionally out of scope for this first remote-shell milestone.
+                    </p>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label htmlFor="remote-backend-name" className="block space-y-1">
+                        <span className="text-xs font-medium text-foreground">Profile name</span>
+                        <Input
+                          id="remote-backend-name"
+                          value={remoteProfileName}
+                          onChange={(event) => {
+                            setRemoteProfileName(event.target.value);
+                            if (remoteProfileError) {
+                              setRemoteProfileError(null);
+                            }
+                          }}
+                          placeholder="Studio Mac mini"
+                          spellCheck={false}
+                        />
+                      </label>
+
+                      <label htmlFor="remote-backend-host" className="block space-y-1">
+                        <span className="text-xs font-medium text-foreground">Host or IP</span>
+                        <Input
+                          id="remote-backend-host"
+                          value={remoteProfileHost}
+                          onChange={(event) => {
+                            setRemoteProfileHost(event.target.value);
+                            if (remoteProfileError) {
+                              setRemoteProfileError(null);
+                            }
+                          }}
+                          placeholder="192.168.1.42"
+                          spellCheck={false}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,160px)_auto] md:items-end">
+                      <label htmlFor="remote-backend-port" className="block space-y-1">
+                        <span className="text-xs font-medium text-foreground">Port</span>
+                        <Input
+                          id="remote-backend-port"
+                          inputMode="numeric"
+                          value={remoteProfilePort}
+                          onChange={(event) => {
+                            setRemoteProfilePort(event.target.value);
+                            if (remoteProfileError) {
+                              setRemoteProfileError(null);
+                            }
+                          }}
+                          placeholder="3773"
+                          spellCheck={false}
+                        />
+                      </label>
+
+                      <label className="block space-y-1">
+                        <span className="text-xs font-medium text-foreground">Protocol</span>
+                        <Select
+                          items={[
+                            { label: "ws://", value: "ws" },
+                            { label: "wss://", value: "wss" },
+                          ]}
+                          value={remoteProfileProtocol}
+                          onValueChange={(value) => {
+                            if (value !== "ws" && value !== "wss") return;
+                            setRemoteProfileProtocol(value);
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectPopup alignItemWithTrigger={false}>
+                            <SelectItem value="ws">ws://</SelectItem>
+                            <SelectItem value="wss">wss://</SelectItem>
+                          </SelectPopup>
+                        </Select>
+                      </label>
+
+                      <Button type="button" onClick={saveRemoteBackendProfile}>
+                        Save profile
+                      </Button>
+                    </div>
+
+                    {remoteProfileError ? (
+                      <p className="text-xs text-destructive">{remoteProfileError}</p>
+                    ) : null}
+
+                    {remoteBackendProfiles.length > 0 ? (
+                      <div className="space-y-2">
+                        {remoteBackendProfiles.map((profile) => {
+                          const isActiveRemote =
+                            settings.backendSelection.mode === "remote" &&
+                            settings.backendSelection.profileId === profile.id;
+                          return (
+                            <div
+                              key={profile.id}
+                              className="flex flex-col gap-3 rounded-lg border border-border bg-background px-3 py-3 md:flex-row md:items-center md:justify-between"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <p className="truncate text-sm font-medium text-foreground">
+                                    {profile.name}
+                                  </p>
+                                  {isActiveRemote ? (
+                                    <span className="rounded bg-primary/12 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+                                      Active
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+                                  {buildRemoteBackendWsUrl(profile)}
+                                </p>
+                              </div>
+
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  size="xs"
+                                  variant={isActiveRemote ? "secondary" : "outline"}
+                                  disabled={isApplyingBackendConnection || isActiveRemote}
+                                  onClick={() => activateRemoteBackend(profile.id)}
+                                >
+                                  {isApplyingBackendConnection && !isActiveRemote
+                                    ? "Connecting..."
+                                    : isActiveRemote
+                                      ? "Connected"
+                                      : "Connect"}
+                                </Button>
+                                <Button
+                                  size="xs"
+                                  variant="ghost"
+                                  disabled={isApplyingBackendConnection}
+                                  onClick={() => removeRemoteBackendProfile(profile.id)}
+                                >
+                                  Remove
+                                </Button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-border bg-background px-3 py-4 text-xs text-muted-foreground">
+                        No remote backend profiles saved yet.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </section>
 
             <section className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-4">
@@ -426,10 +805,9 @@ function SettingsRouteView() {
                                 variant="outline"
                                 onClick={() =>
                                   updateSettings(
-                                    patchCustomModels(
-                                      provider,
-                                      [...getDefaultCustomModelsForProvider(defaults, provider)],
-                                    ),
+                                    patchCustomModels(provider, [
+                                      ...getDefaultCustomModelsForProvider(defaults, provider),
+                                    ]),
                                   )
                                 }
                               >
@@ -446,7 +824,8 @@ function SettingsRouteView() {
                                   className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2"
                                 >
                                   <div className="flex min-w-0 flex-1 items-center gap-2">
-                                    {provider === "codex" && shouldShowFastTierIcon(slug, codexServiceTier) ? (
+                                    {provider === "codex" &&
+                                    shouldShowFastTierIcon(slug, codexServiceTier) ? (
                                       <ZapIcon className="size-3.5 shrink-0 text-amber-500" />
                                     ) : null}
                                     <code className="min-w-0 flex-1 truncate text-xs text-foreground">

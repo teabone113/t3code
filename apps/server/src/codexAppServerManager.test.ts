@@ -422,7 +422,7 @@ describe("sendTurn", () => {
     });
   });
 
-  it("passes Codex default mode as a collaboration preset on turn/start", async () => {
+  it("maps the legacy default interaction mode to Codex code mode on turn/start", async () => {
     const { manager, context, sendRequest } = createSendTurnHarness();
 
     await manager.sendTurn({
@@ -442,7 +442,7 @@ describe("sendTurn", () => {
       ],
       model: "gpt-5.3-codex",
       collaborationMode: {
-        mode: "default",
+        mode: "code",
         settings: {
           model: "gpt-5.3-codex",
           reasoning_effort: "medium",

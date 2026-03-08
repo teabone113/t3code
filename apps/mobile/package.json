@@ -1,0 +1,20 @@
+{
+  "name": "@t3tools/mobile",
+  "version": "0.0.4",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "cap:add:ios": "cap add ios",
+    "prepare:web": "bun run --cwd ../web build",
+    "cap:sync": "bun run prepare:web && cap sync ios",
+    "cap:open:ios": "bun run cap:sync && cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/core": "^7.2.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.2.0",
+    "@capacitor/ios": "^7.2.0",
+    "typescript": "catalog:"
+  }
+}

@@ -1,4 +1,5 @@
 export * from "./baseSchemas";
+export * from "./connection";
 export * from "./ipc";
 export * from "./terminal";
 export * from "./provider";

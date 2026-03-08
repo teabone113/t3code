@@ -6,5 +6,8 @@ declare global {
   interface Window {
     nativeApi?: NativeApi;
     desktopBridge?: DesktopBridge;
+    Capacitor?: {
+      isNativePlatform?: () => boolean;
+    };
   }
 }

@@ -412,7 +412,7 @@ function buildCodexCollaborationMode(input: {
   readonly effort?: string;
 }):
   | {
-      mode: "default" | "plan";
+      mode: "code" | "plan";
       settings: {
         model: string;
         reasoning_effort: string;
@@ -425,7 +425,7 @@ function buildCodexCollaborationMode(input: {
   }
   const model = normalizeCodexModelSlug(input.model) ?? "gpt-5.3-codex";
   return {
-    mode: input.interactionMode,
+    mode: input.interactionMode === "plan" ? "plan" : "code",
     settings: {
       model,
       reasoning_effort: input.effort ?? "medium",
@@ -759,7 +759,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       serviceTier?: string | null;
       effort?: string;
       collaborationMode?: {
-        mode: "default" | "plan";
+        mode: "code" | "plan";
         settings: {
           model: string;
           reasoning_effort: string;

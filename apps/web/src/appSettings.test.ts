@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   getAppModelOptions,
   getSlashModelOptions,
+  normalizeBackendSelection,
   normalizeCustomModelSlugs,
+  normalizeRemoteBackendProfiles,
   resolveAppServiceTier,
   shouldShowFastTierIcon,
   resolveAppModelSelection,
@@ -61,25 +63,63 @@ describe("resolveAppModelSelection", () => {
   });
 });
 
+describe("normalizeRemoteBackendProfiles", () => {
+  it("deduplicates profiles by id and caps the saved list", () => {
+    expect(
+      normalizeRemoteBackendProfiles([
+        {
+          id: "studio",
+          name: " Studio ",
+          host: " 192.168.1.42 ",
+          port: 3773,
+          protocol: "ws",
+        },
+        {
+          id: "studio",
+          name: "Duplicate",
+          host: "example.com",
+          port: 443,
+          protocol: "wss",
+        },
+      ]),
+    ).toEqual([
+      {
+        id: "studio",
+        name: "Studio",
+        host: "192.168.1.42",
+        port: 3773,
+        protocol: "ws",
+      },
+    ]);
+  });
+});
+
+describe("normalizeBackendSelection", () => {
+  it("falls back to the local backend when the selected profile no longer exists", () => {
+    expect(
+      normalizeBackendSelection(
+        {
+          mode: "remote",
+          profileId: "missing",
+        },
+        [],
+      ),
+    ).toEqual({
+      mode: "local",
+      profileId: null,
+    });
+  });
+});
+
 describe("getSlashModelOptions", () => {
   it("includes saved custom model slugs for /model command suggestions", () => {
-    const options = getSlashModelOptions(
-      "codex",
-      ["custom/internal-model"],
-      "",
-      "gpt-5.3-codex",
-    );
+    const options = getSlashModelOptions("codex", ["custom/internal-model"], "", "gpt-5.3-codex");
 
     expect(options.some((option) => option.slug === "custom/internal-model")).toBe(true);
   });
 
   it("filters slash-model suggestions across built-in and custom model names", () => {
-    const options = getSlashModelOptions(
-      "codex",
-      ["openai/gpt-oss-120b"],
-      "oss",
-      "gpt-5.3-codex",
-    );
+    const options = getSlashModelOptions("codex", ["openai/gpt-oss-120b"], "oss", "gpt-5.3-codex");
 
     expect(options.map((option) => option.slug)).toEqual(["openai/gpt-oss-120b"]);
   });

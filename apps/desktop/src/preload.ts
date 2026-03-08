@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopBridge } from "@t3tools/contracts";
 
 const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
+const BACKEND_CONNECTION_GET_CHANNEL = "desktop:backend-connection:get";
+const BACKEND_CONNECTION_SET_CHANNEL = "desktop:backend-connection:set";
 const CONFIRM_CHANNEL = "desktop:confirm";
 const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
 const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
@@ -10,10 +12,15 @@ const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
-const wsUrl = process.env.T3CODE_DESKTOP_WS_URL ?? null;
 
 contextBridge.exposeInMainWorld("desktopBridge", {
-  getWsUrl: () => wsUrl,
+  getWsUrl: () => process.env.T3CODE_DESKTOP_WS_URL ?? null,
+  getStartupRole: () =>
+    (process.env.T3CODE_DESKTOP_STARTUP_ROLE as "frontend-only" | "backend-only" | "both") ??
+    "both",
+  getBackendConnection: () => ipcRenderer.invoke(BACKEND_CONNECTION_GET_CHANNEL),
+  setBackendConnection: (connection) =>
+    ipcRenderer.invoke(BACKEND_CONNECTION_SET_CHANNEL, connection),
   pickFolder: () => ipcRenderer.invoke(PICK_FOLDER_CHANNEL),
   confirm: (message) => ipcRenderer.invoke(CONFIRM_CHANNEL, message),
   showContextMenu: (items, position) => ipcRenderer.invoke(CONTEXT_MENU_CHANNEL, items, position),

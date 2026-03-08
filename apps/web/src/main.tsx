@@ -6,11 +6,19 @@ import { createHashHistory, createBrowserHistory } from "@tanstack/react-router"
 import "@xterm/xterm/css/xterm.css";
 import "./index.css";
 
-import { isElectron } from "./env";
+import { isCapacitor, isElectron } from "./env";
 import { getRouter } from "./router";
 import { APP_DISPLAY_NAME } from "./branding";
+import { shouldBootToConnectionSettings } from "./backendConnection";
 
-const history = isElectron ? createHashHistory() : createBrowserHistory();
+const history = isElectron || isCapacitor ? createHashHistory() : createBrowserHistory();
+
+if ((isElectron || isCapacitor) && shouldBootToConnectionSettings()) {
+  const targetHash = "#/settings";
+  if (window.location.hash !== targetHash) {
+    window.location.hash = targetHash;
+  }
+}
 
 const router = getRouter(history);
 

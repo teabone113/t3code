@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-        <string>T3 Code</string>
+	<string>T3 Code</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -45,5 +45,12 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Discover and connect to T3 Code backends on your local network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_t3code._tcp</string>
+		<string>_t3code._tcp.</string>
+	</array>
 </dict>
 </plist>

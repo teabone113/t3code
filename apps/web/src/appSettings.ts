@@ -2,9 +2,11 @@ import { useCallback, useSyncExternalStore } from "react";
 import { Option, Schema } from "effect";
 import {
   BackendSelection,
+  DiscoveredBackend,
   MAX_REMOTE_BACKEND_PROFILES,
   RemoteBackendProfile,
   type BackendSelection as BackendSelectionValue,
+  type DiscoveredBackend as DiscoveredBackendValue,
   type ProviderKind,
   type ProviderServiceTier,
   type RemoteBackendProfile as RemoteBackendProfileValue,
@@ -160,6 +162,17 @@ export function normalizeRemoteBackendProfiles(
   return normalizedProfiles;
 }
 
+function normalizeDiscoveredBackend(
+  backend: DiscoveredBackendValue | null | undefined,
+): DiscoveredBackendValue | null {
+  if (!backend) {
+    return null;
+  }
+
+  const decoded = Schema.decodeUnknownOption(DiscoveredBackend)(backend);
+  return decoded._tag === "Some" ? decoded.value : null;
+}
+
 export function normalizeBackendSelection(
   selection: BackendSelectionValue,
   profiles: readonly RemoteBackendProfileValue[],
@@ -169,14 +182,33 @@ export function normalizeBackendSelection(
     return BackendSelection.makeUnsafe({});
   }
 
+  const discoveredBackend = normalizeDiscoveredBackend(decoded.value.discoveredBackend);
+  if (decoded.value.mode === "remote" && discoveredBackend) {
+    return {
+      mode: "remote",
+      profileId: null,
+      discoveredBackend,
+    };
+  }
+
   if (decoded.value.mode === "remote") {
     const selectedProfile = profiles.find((profile) => profile.id === decoded.value.profileId);
     if (!selectedProfile) {
       return BackendSelection.makeUnsafe({});
     }
+
+    return {
+      mode: "remote",
+      profileId: selectedProfile.id,
+      discoveredBackend: null,
+    };
   }
 
-  return decoded.value;
+  return {
+    mode: "local",
+    profileId: null,
+    discoveredBackend: null,
+  };
 }
 
 export function getAppModelOptions(

@@ -3,6 +3,7 @@ import {
   FolderIcon,
   GitPullRequestIcon,
   RocketIcon,
+  Settings2Icon,
   SquarePenIcon,
   TerminalIcon,
 } from "lucide-react";
@@ -19,8 +20,8 @@ import {
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useAppSettings } from "../appSettings";
-import { isElectron } from "../env";
-import { APP_STAGE_LABEL } from "../branding";
+import { isCapacitorShell, isElectron } from "../env";
+import { APP_STAGE_LABEL, IPAD_SHELL_VERSION } from "../branding";
 import { resolveBackendConnection } from "../backendConnection";
 import { newCommandId, newProjectId, newThreadId } from "../lib/utils";
 import { useStore } from "../store";
@@ -955,15 +956,30 @@ export default function Sidebar() {
   const wordmark = (
     <div className="flex items-center gap-2">
       <SidebarTrigger className="shrink-0 md:hidden" />
-      <div className="flex min-w-0 flex-1 items-center gap-1 mt-2 ml-1">
-        <T3Wordmark />
-        <span className="truncate text-sm font-medium tracking-tight text-muted-foreground">
-          Code
-        </span>
-        <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
-          {APP_STAGE_LABEL}
-        </span>
-      </div>
+      {isCapacitorShell() ? (
+        <div className="mt-2 ml-1 flex min-w-0 flex-1 items-center gap-1">
+          <T3Wordmark />
+          <span className="truncate text-sm font-medium tracking-tight text-muted-foreground">
+            Code iPad
+          </span>
+          <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
+            {APP_STAGE_LABEL}
+          </span>
+          <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium tracking-[0.18em] text-muted-foreground/60">
+            {`v ${IPAD_SHELL_VERSION}`}
+          </span>
+        </div>
+      ) : (
+        <div className="mt-2 ml-1 flex min-w-0 flex-1 items-center gap-1">
+          <T3Wordmark />
+          <span className="truncate text-sm font-medium tracking-tight text-muted-foreground">
+            Code
+          </span>
+          <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
+            {APP_STAGE_LABEL}
+          </span>
+        </div>
+      )}
     </div>
   );
 
@@ -1275,6 +1291,16 @@ export default function Sidebar() {
 
       <SidebarSeparator />
       <SidebarFooter className="gap-0 p-3">
+        <button
+          type="button"
+          className="mb-3 flex w-full items-center justify-center gap-1.5 rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground transition-colors duration-150 hover:bg-secondary"
+          onClick={() => {
+            void navigate({ to: "/settings" });
+          }}
+        >
+          <Settings2Icon className="size-3.5" />
+          <span>Preferences</span>
+        </button>
         {addingProject ? (
           <>
             <p className="mb-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">

@@ -28,8 +28,6 @@ describe("backendConnection", () => {
   it("builds a websocket URL from a saved remote profile", () => {
     expect(
       buildRemoteBackendWsUrl({
-        id: "studio",
-        name: "Studio",
         host: "192.168.1.42",
         port: 3773,
         protocol: "ws",

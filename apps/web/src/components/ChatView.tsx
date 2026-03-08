@@ -51,7 +51,7 @@ import { gitBranchesQueryOptions, gitCreateWorktreeMutationOptions } from "~/lib
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
 
-import { isElectron } from "../env";
+import { isCapacitorShell, isElectron } from "../env";
 import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
 import {
   type ComposerSlashCommand,
@@ -1348,11 +1348,24 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const focusComposer = useCallback(() => {
     composerEditorRef.current?.focusAtEnd();
   }, []);
+  const shouldAutoFocusComposer = !isCapacitorShell();
+  const dismissComposerKeyboard = useCallback(() => {
+    if (!isCapacitorShell()) {
+      return;
+    }
+    composerEditorRef.current?.blur();
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  }, []);
   const scheduleComposerFocus = useCallback(() => {
+    if (!shouldAutoFocusComposer) {
+      return;
+    }
     window.requestAnimationFrame(() => {
       focusComposer();
     });
-  }, [focusComposer]);
+  }, [focusComposer, shouldAutoFocusComposer]);
   const setTerminalOpen = useCallback(
     (open: boolean) => {
       if (!activeThreadId) return;
@@ -1919,6 +1932,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   }, [activeThread?.id]);
 
   useEffect(() => {
+    if (!shouldAutoFocusComposer) return;
     if (!activeThread?.id || terminalState.terminalOpen) return;
     const frame = window.requestAnimationFrame(() => {
       focusComposer();
@@ -1926,7 +1940,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [activeThread?.id, focusComposer, terminalState.terminalOpen]);
+  }, [activeThread?.id, focusComposer, shouldAutoFocusComposer, terminalState.terminalOpen]);
 
   useEffect(() => {
     composerImagesRef.current = composerImages;
@@ -2155,6 +2169,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
       return;
     } else if (previous && !current) {
       terminalOpenByThreadRef.current[activeThreadId] = current;
+      if (!shouldAutoFocusComposer) {
+        return;
+      }
       const frame = window.requestAnimationFrame(() => {
         focusComposer();
       });
@@ -2164,7 +2181,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     }
 
     terminalOpenByThreadRef.current[activeThreadId] = current;
-  }, [activeThreadId, focusComposer, terminalState.terminalOpen]);
+  }, [activeThreadId, focusComposer, shouldAutoFocusComposer, terminalState.terminalOpen]);
 
   useEffect(() => {
     const isTerminalFocused = (): boolean => {
@@ -2400,6 +2417,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     const api = readNativeApi();
     if (!api || !activeThread || isSendBusy || isConnecting || sendInFlightRef.current) return;
     if (activePendingProgress) {
+      dismissComposerKeyboard();
       onAdvanceActivePendingUserInput();
       return;
     }
@@ -2414,6 +2432,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       setComposerHighlightedItemId(null);
       setComposerCursor(0);
       setComposerTrigger(null);
+      dismissComposerKeyboard();
       await onSubmitPlanFollowUp({
         text: followUp.text,
         interactionMode: followUp.interactionMode,
@@ -2429,6 +2448,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       setComposerHighlightedItemId(null);
       setComposerCursor(0);
       setComposerTrigger(null);
+      dismissComposerKeyboard();
       return;
     }
     if (!trimmed && composerImages.length === 0) return;
@@ -2496,6 +2516,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     setComposerHighlightedItemId(null);
     setComposerCursor(0);
     setComposerTrigger(null);
+    dismissComposerKeyboard();
 
     let createdServerThreadForLocalDraft = false;
     let turnStartSucceeded = false;
@@ -2874,6 +2895,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       ]);
       shouldAutoScrollRef.current = true;
       forceStickToBottom();
+      dismissComposerKeyboard();
 
       try {
         await persistThreadSettingsForNextTurn({
@@ -2924,6 +2946,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     [
       activeThread,
       beginSendPhase,
+      dismissComposerKeyboard,
       forceStickToBottom,
       isConnecting,
       isSendBusy,

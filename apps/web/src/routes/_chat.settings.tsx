@@ -1,8 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   BackendSelection,
+  type DiscoveredBackend,
   type BackendProtocol,
   type ProviderKind,
   type RemoteBackendProfile,
@@ -19,8 +20,9 @@ import {
   shouldShowFastTierIcon,
   useAppSettings,
 } from "../appSettings";
+import { discoverBackends, supportsBackendDiscovery } from "../backendDiscovery";
 import { buildRemoteBackendWsUrl, resolveBackendConnection } from "../backendConnection";
-import { isCapacitor, isElectron } from "../env";
+import { isCapacitorShell, isElectron } from "../env";
 import { useTheme } from "../hooks/useTheme";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { ensureNativeApi, resetNativeApi } from "../nativeApi";
@@ -70,6 +72,10 @@ function resolveBackendSelectionLabel(
     return "Local backend";
   }
 
+  if (selection.discoveredBackend) {
+    return selection.discoveredBackend.name;
+  }
+
   return profiles.find((profile) => profile.id === selection.profileId)?.name ?? "Remote backend";
 }
 
@@ -82,19 +88,33 @@ async function syncDesktopBackendSelection(
   }
 
   const activeProfile =
-    selection.mode === "remote"
+    selection.mode === "remote" && selection.discoveredBackend === null
       ? (profiles.find((profile) => profile.id === selection.profileId) ?? null)
       : null;
+  const activeRemoteEndpoint = selection.discoveredBackend ?? activeProfile;
   await window.desktopBridge.setBackendConnection(
-    activeProfile
+    activeRemoteEndpoint
       ? {
           mode: "remote",
-          remoteWsUrl: buildRemoteBackendWsUrl(activeProfile),
+          remoteWsUrl: buildRemoteBackendWsUrl(activeRemoteEndpoint),
         }
       : {
           mode: "local",
           remoteWsUrl: null,
         },
+  );
+}
+
+function isDiscoveredBackendSelected(
+  selection: AppSettings["backendSelection"],
+  backend: DiscoveredBackend,
+): boolean {
+  return (
+    selection.mode === "remote" &&
+    selection.discoveredBackend !== null &&
+    selection.discoveredBackend.host === backend.host &&
+    selection.discoveredBackend.port === backend.port &&
+    selection.discoveredBackend.protocol === backend.protocol
   );
 }
 
@@ -164,6 +184,9 @@ function SettingsRouteView() {
   const [remoteProfileProtocol, setRemoteProfileProtocol] = useState<BackendProtocol>("ws");
   const [remoteProfileError, setRemoteProfileError] = useState<string | null>(null);
   const [isApplyingBackendConnection, setIsApplyingBackendConnection] = useState(false);
+  const [discoveredBackends, setDiscoveredBackends] = useState<DiscoveredBackend[]>([]);
+  const [isDiscoveringBackends, setIsDiscoveringBackends] = useState(false);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
 
   const codexBinaryPath = settings.codexBinaryPath;
   const codexHomePath = settings.codexHomePath;
@@ -172,7 +195,8 @@ function SettingsRouteView() {
   const remoteBackendProfiles = settings.remoteBackendProfiles;
   const activeBackendConnection = resolveBackendConnection();
   const startupRole = window.desktopBridge?.getStartupRole?.() ?? null;
-  const isFrontendOnlyShell = isCapacitor || startupRole === "frontend-only";
+  const isFrontendOnlyShell = isCapacitorShell() || startupRole === "frontend-only";
+  const discoverySupported = supportsBackendDiscovery();
   const activeBackendLabel = resolveBackendSelectionLabel(
     settings.backendSelection,
     remoteBackendProfiles,
@@ -271,6 +295,7 @@ function SettingsRouteView() {
         {
           mode: "remote",
           profileId,
+          discoveredBackend: null,
         },
         remoteBackendProfiles,
       );
@@ -293,6 +318,48 @@ function SettingsRouteView() {
     },
     [applyBackendConnection, remoteBackendProfiles, settings.backendSelection, updateSettings],
   );
+
+  const refreshDiscoveredBackends = useCallback(async () => {
+    if (!discoverySupported) {
+      setDiscoveredBackends([]);
+      setDiscoveryError(null);
+      return;
+    }
+
+    setIsDiscoveringBackends(true);
+    setDiscoveryError(null);
+    try {
+      setDiscoveredBackends(await discoverBackends());
+    } catch (error) {
+      setDiscoveryError(
+        error instanceof Error ? error.message : "Unable to browse Bonjour backends.",
+      );
+      setDiscoveredBackends([]);
+    } finally {
+      setIsDiscoveringBackends(false);
+    }
+  }, [discoverySupported]);
+
+  const activateDiscoveredBackend = useCallback(
+    (backend: DiscoveredBackend) => {
+      void applyBackendConnection(
+        {
+          mode: "remote",
+          profileId: null,
+          discoveredBackend: backend,
+        },
+        remoteBackendProfiles,
+      );
+    },
+    [applyBackendConnection, remoteBackendProfiles],
+  );
+
+  useEffect(() => {
+    if (!discoverySupported) {
+      return;
+    }
+    void refreshDiscoveredBackends();
+  }, [discoverySupported, refreshDiscoveredBackends]);
 
   const addCustomModel = useCallback(
     (provider: ProviderKind) => {
@@ -359,7 +426,7 @@ function SettingsRouteView() {
   );
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
+    <SidebarInset className="safe-area-shell h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
         {isElectron && (
           <div className="drag-region flex h-[52px] shrink-0 items-center border-b border-border px-5">
@@ -422,11 +489,96 @@ function SettingsRouteView() {
                 </div>
 
                 <div className="rounded-xl border border-border bg-background/50 p-4">
+                  <div className="mb-4 flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-medium text-foreground">Discovered backends</h3>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Browse Bonjour-advertised backends on your local network and connect
+                        without typing host or port details.
+                      </p>
+                    </div>
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={!discoverySupported || isDiscoveringBackends}
+                      onClick={() => void refreshDiscoveredBackends()}
+                    >
+                      {isDiscoveringBackends ? "Refreshing..." : "Refresh"}
+                    </Button>
+                  </div>
+
+                  {discoverySupported ? (
+                    <div className="space-y-3">
+                      {discoveryError ? (
+                        <p className="text-xs text-destructive">{discoveryError}</p>
+                      ) : null}
+
+                      {discoveredBackends.length > 0 ? (
+                        <div className="space-y-2">
+                          {discoveredBackends.map((backend) => {
+                            const isActiveDiscoveredBackend = isDiscoveredBackendSelected(
+                              settings.backendSelection,
+                              backend,
+                            );
+                            return (
+                              <div
+                                key={`${backend.protocol}:${backend.host}:${backend.port}`}
+                                className="flex flex-col gap-3 rounded-lg border border-border bg-background px-3 py-3 md:flex-row md:items-center md:justify-between"
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-2">
+                                    <p className="truncate text-sm font-medium text-foreground">
+                                      {backend.name}
+                                    </p>
+                                    {isActiveDiscoveredBackend ? (
+                                      <span className="rounded bg-primary/12 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+                                        Active
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                  <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+                                    {buildRemoteBackendWsUrl(backend)}
+                                  </p>
+                                </div>
+
+                                <Button
+                                  size="xs"
+                                  variant={isActiveDiscoveredBackend ? "secondary" : "outline"}
+                                  disabled={isApplyingBackendConnection || isActiveDiscoveredBackend}
+                                  onClick={() => activateDiscoveredBackend(backend)}
+                                >
+                                  {isApplyingBackendConnection && !isActiveDiscoveredBackend
+                                    ? "Connecting..."
+                                    : isActiveDiscoveredBackend
+                                      ? "Connected"
+                                      : "Connect"}
+                                </Button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="rounded-lg border border-dashed border-border bg-background px-3 py-4 text-xs text-muted-foreground">
+                          {isDiscoveringBackends
+                            ? "Looking for Bonjour backends on your network..."
+                            : "No Bonjour backends found right now."}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-border bg-background px-3 py-4 text-xs text-muted-foreground">
+                      Bonjour discovery is available in the desktop and iPad shells. Browser-only
+                      sessions can still connect with manual backend profiles below.
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-xl border border-border bg-background/50 p-4">
                   <div className="mb-4">
                     <h3 className="text-sm font-medium text-foreground">Saved remote profiles</h3>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      Enter a backend host and port manually. Discovery, broker setup, and auth are
-                      intentionally out of scope for this first remote-shell milestone.
+                      Enter a backend host and port manually if you do not want to rely on local
+                      network discovery.
                     </p>
                   </div>
 

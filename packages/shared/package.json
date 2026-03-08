@@ -23,6 +23,10 @@
     "./Net": {
       "types": "./src/Net.ts",
       "import": "./src/Net.ts"
+    },
+    "./discovery": {
+      "types": "./src/discovery.ts",
+      "import": "./src/discovery.ts"
     }
   },
   "scripts": {
@@ -32,6 +36,7 @@
   },
   "dependencies": {
     "@t3tools/contracts": "workspace:*",
+    "bonjour-service": "^1.3.0",
     "effect": "catalog:"
   },
   "devDependencies": {

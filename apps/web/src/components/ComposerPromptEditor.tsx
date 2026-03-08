@@ -387,6 +387,7 @@ export interface ComposerPromptEditorHandle {
   focus: () => void;
   focusAt: (cursor: number) => void;
   focusAtEnd: () => void;
+  blur: () => void;
   readSnapshot: () => { value: string; cursor: number };
 }
 
@@ -715,9 +716,12 @@ function ComposerPromptEditorInner({
       focusAtEnd: () => {
         focusAt(snapshotRef.current.value.length);
       },
+      blur: () => {
+        editor.getRootElement()?.blur();
+      },
       readSnapshot,
     }),
-    [focusAt, readSnapshot],
+    [editor, focusAt, readSnapshot],
   );
 
   const handleEditorChange = useCallback((editorState: EditorState) => {

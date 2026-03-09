@@ -11,6 +11,11 @@ import type { Duplex } from "node:stream";
 
 import Mime from "@effect/platform-node/Mime";
 import {
+  buildBonjourBackendServiceName,
+  createBonjourBackendAdvertisement,
+  shouldAdvertiseBonjourBackend,
+} from "@t3tools/shared/discovery";
+import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   type ClientOrchestrationCommand,
@@ -714,6 +719,21 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   yield* NodeHttpServer.make(() => httpServer, listenOptions).pipe(
     Effect.mapError((cause) => new ServerLifecycleError({ operation: "httpServerListen", cause })),
   );
+
+  if (shouldAdvertiseBonjourBackend({ host, authToken })) {
+    const bonjourAdvertisement = createBonjourBackendAdvertisement({
+      name: buildBonjourBackendServiceName(),
+      port,
+      protocol: "ws",
+      ...(host ? { host } : {}),
+    });
+    yield* Effect.addFinalizer(() => Effect.promise(() => bonjourAdvertisement.stop()));
+    yield* Effect.logInfo("bonjour backend advertisement started", {
+      address: host ?? "0.0.0.0",
+      port,
+      serviceType: "t3code",
+    });
+  }
 
   yield* Effect.addFinalizer(() =>
     Effect.all([

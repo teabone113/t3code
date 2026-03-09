@@ -25,11 +25,11 @@ function ChatRouteLayout() {
   }, [navigate]);
 
   return (
-    <SidebarProvider defaultOpen>
+    <SidebarProvider defaultOpen defaultMobileOpen>
       <Sidebar
         side="left"
         collapsible="offcanvas"
-        className="border-r border-border bg-card text-foreground"
+        className="safe-area-shell border-r border-border bg-card text-foreground"
       >
         <ThreadSidebar />
       </Sidebar>

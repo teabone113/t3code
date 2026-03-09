@@ -40,7 +40,11 @@ import type {
   OrchestrationEvent,
   OrchestrationReadModel,
 } from "./orchestration";
-import type { DesktopShellBackendConnection, DesktopStartupRole } from "./connection";
+import type {
+  DesktopShellBackendConnection,
+  DesktopStartupRole,
+  DiscoveredBackend,
+} from "./connection";
 import { EditorId } from "./editor";
 
 export interface ContextMenuItem<T extends string = string> {
@@ -85,6 +89,7 @@ export interface DesktopBridge {
   setBackendConnection: (
     connection: DesktopShellBackendConnection,
   ) => Promise<DesktopShellBackendConnection>;
+  discoverBackends: (timeoutMs?: number) => Promise<DiscoveredBackend[]>;
   pickFolder: () => Promise<string | null>;
   confirm: (message: string) => Promise<boolean>;
   showContextMenu: <T extends string>(

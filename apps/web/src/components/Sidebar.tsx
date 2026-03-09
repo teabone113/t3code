@@ -3,6 +3,7 @@ import {
   FolderIcon,
   GitPullRequestIcon,
   RocketIcon,
+  Settings2Icon,
   SquarePenIcon,
   TerminalIcon,
 } from "lucide-react";
@@ -19,8 +20,8 @@ import {
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useAppSettings } from "../appSettings";
-import { isElectron } from "../env";
-import { APP_STAGE_LABEL } from "../branding";
+import { isCapacitorShell, isElectron } from "../env";
+import { APP_STAGE_LABEL, IOS_SHELL_VERSION } from "../branding";
 import { resolveBackendConnection } from "../backendConnection";
 import { newCommandId, newProjectId, newThreadId } from "../lib/utils";
 import { useStore } from "../store";
@@ -61,6 +62,7 @@ import {
 } from "./ui/sidebar";
 import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
 import { isNonEmpty as isNonEmptyString } from "effect/String";
+import { useCompactPhoneShell } from "../hooks/useCompactPhoneShell";
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const THREAD_PREVIEW_LIMIT = 6;
@@ -235,6 +237,7 @@ function ProjectFavicon({ cwd }: { cwd: string }) {
 }
 
 export default function Sidebar() {
+  const isCompactPhoneShell = useCompactPhoneShell();
   const projects = useStore((store) => store.projects);
   const threads = useStore((store) => store.threads);
   const markThreadUnread = useStore((store) => store.markThreadUnread);
@@ -955,15 +958,30 @@ export default function Sidebar() {
   const wordmark = (
     <div className="flex items-center gap-2">
       <SidebarTrigger className="shrink-0 md:hidden" />
-      <div className="flex min-w-0 flex-1 items-center gap-1 mt-2 ml-1">
-        <T3Wordmark />
-        <span className="truncate text-sm font-medium tracking-tight text-muted-foreground">
-          Code
-        </span>
-        <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
-          {APP_STAGE_LABEL}
-        </span>
-      </div>
+      {isCapacitorShell() ? (
+        <div className="mt-2 ml-1 flex min-w-0 flex-1 items-center gap-1">
+          <T3Wordmark />
+          <span className="truncate text-sm font-medium tracking-tight text-muted-foreground">
+            {isCompactPhoneShell ? "Code iPhone" : "Code iPad"}
+          </span>
+          <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
+            {APP_STAGE_LABEL}
+          </span>
+          <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium tracking-[0.18em] text-muted-foreground/60">
+            {`v ${IOS_SHELL_VERSION}`}
+          </span>
+        </div>
+      ) : (
+        <div className="mt-2 ml-1 flex min-w-0 flex-1 items-center gap-1">
+          <T3Wordmark />
+          <span className="truncate text-sm font-medium tracking-tight text-muted-foreground">
+            Code
+          </span>
+          <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
+            {APP_STAGE_LABEL}
+          </span>
+        </div>
+      )}
     </div>
   );
 
@@ -1173,7 +1191,7 @@ export default function Sidebar() {
                                           el.select();
                                         }
                                       }}
-                                      className="min-w-0 flex-1 truncate text-xs bg-transparent outline-none border border-ring rounded px-0.5"
+                                      className="min-w-0 flex-1 truncate rounded border border-ring bg-transparent px-0.5 text-base outline-none md:text-xs"
                                       value={renamingTitle}
                                       onChange={(e) => setRenamingTitle(e.target.value)}
                                       onKeyDown={(e) => {
@@ -1275,13 +1293,23 @@ export default function Sidebar() {
 
       <SidebarSeparator />
       <SidebarFooter className="gap-0 p-3">
+        <button
+          type="button"
+          className="mb-3 flex w-full items-center justify-center gap-1.5 rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground transition-colors duration-150 hover:bg-secondary"
+          onClick={() => {
+            void navigate({ to: "/settings" });
+          }}
+        >
+          <Settings2Icon className="size-3.5" />
+          <span>Preferences</span>
+        </button>
         {addingProject ? (
           <>
             <p className="mb-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
               Add project
             </p>
             <input
-              className="mb-2 w-full rounded-md border border-border bg-secondary px-2 py-1.5 font-mono text-xs text-foreground placeholder:text-muted-foreground/40 focus:border-ring focus:outline-none"
+              className="mb-2 w-full rounded-md border border-border bg-secondary px-2 py-1.5 font-mono text-base text-foreground placeholder:text-muted-foreground/40 focus:border-ring focus:outline-none md:text-xs"
               placeholder="/path/to/project"
               value={newCwd}
               onChange={(event) => setNewCwd(event.target.value)}

@@ -4,6 +4,7 @@ import type { DesktopBridge } from "@t3tools/contracts";
 const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 const BACKEND_CONNECTION_GET_CHANNEL = "desktop:backend-connection:get";
 const BACKEND_CONNECTION_SET_CHANNEL = "desktop:backend-connection:set";
+const BACKEND_DISCOVERY_CHANNEL = "desktop:backend-discovery:discover";
 const CONFIRM_CHANNEL = "desktop:confirm";
 const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
 const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
@@ -21,6 +22,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   getBackendConnection: () => ipcRenderer.invoke(BACKEND_CONNECTION_GET_CHANNEL),
   setBackendConnection: (connection) =>
     ipcRenderer.invoke(BACKEND_CONNECTION_SET_CHANNEL, connection),
+  discoverBackends: (timeoutMs) => ipcRenderer.invoke(BACKEND_DISCOVERY_CHANNEL, timeoutMs),
   pickFolder: () => ipcRenderer.invoke(PICK_FOLDER_CHANNEL),
   confirm: (message) => ipcRenderer.invoke(CONFIRM_CHANNEL, message),
   showContextMenu: (items, position) => ipcRenderer.invoke(CONTEXT_MENU_CHANNEL, items, position),

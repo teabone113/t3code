@@ -1,12 +1,20 @@
-import type { BackendSelection, RemoteBackendProfile } from "@t3tools/contracts";
+import type { BackendSelection, DiscoveredBackend, RemoteBackendProfile } from "@t3tools/contracts";
 
 import { getAppSettingsSnapshot } from "./appSettings";
+import { isCapacitorShell } from "./env";
 
 export interface ResolvedBackendConnection {
   selection: BackendSelection;
   wsUrl: string;
   httpOrigin: string;
   activeProfile: RemoteBackendProfile | null;
+  activeDiscoveredBackend: DiscoveredBackend | null;
+}
+
+interface RemoteBackendEndpoint {
+  host: string;
+  port: number;
+  protocol: "ws" | "wss";
 }
 
 function parseDefaultWsCandidate(): string | null {
@@ -39,7 +47,7 @@ export function resolveDefaultBackendWsUrl(): string {
   return "ws://127.0.0.1:3773";
 }
 
-export function buildRemoteBackendWsUrl(profile: RemoteBackendProfile): string {
+export function buildRemoteBackendWsUrl(profile: RemoteBackendEndpoint): string {
   return `${profile.protocol}://${profile.host}:${profile.port}`;
 }
 
@@ -60,20 +68,30 @@ export function resolveHttpOriginFromWsUrl(wsUrl: string): string {
 
 export function resolveBackendConnection(): ResolvedBackendConnection {
   const settings = getAppSettingsSnapshot();
-  const activeProfile =
+  const activeDiscoveredBackend =
     settings.backendSelection.mode === "remote"
+      ? settings.backendSelection.discoveredBackend
+      : null;
+  const activeProfile =
+    settings.backendSelection.mode === "remote" && activeDiscoveredBackend === null
       ? (settings.remoteBackendProfiles.find(
           (profile) => profile.id === settings.backendSelection.profileId,
         ) ?? null)
       : null;
-  const wsUrl = activeProfile
-    ? buildRemoteBackendWsUrl(activeProfile)
+  const activeRemoteEndpoint = activeDiscoveredBackend ?? activeProfile;
+  const wsUrl = activeRemoteEndpoint
+    ? buildRemoteBackendWsUrl(activeRemoteEndpoint)
     : resolveDefaultBackendWsUrl();
+
   return {
-    selection: activeProfile ? settings.backendSelection : { mode: "local", profileId: null },
+    selection:
+      activeRemoteEndpoint !== null
+        ? settings.backendSelection
+        : { mode: "local", profileId: null, discoveredBackend: null },
     wsUrl,
     httpOrigin: resolveHttpOriginFromWsUrl(wsUrl),
     activeProfile,
+    activeDiscoveredBackend,
   };
 }
 
@@ -85,9 +103,10 @@ export function shouldBootToConnectionSettings(): boolean {
   const settings = getAppSettingsSnapshot();
   const hasRemoteSelection =
     settings.backendSelection.mode === "remote" &&
-    settings.remoteBackendProfiles.some(
-      (profile) => profile.id === settings.backendSelection.profileId,
-    );
+    (settings.backendSelection.discoveredBackend !== null ||
+      settings.remoteBackendProfiles.some(
+        (profile) => profile.id === settings.backendSelection.profileId,
+      ));
   if (hasRemoteSelection) {
     return false;
   }
@@ -97,6 +116,5 @@ export function shouldBootToConnectionSettings(): boolean {
     return true;
   }
 
-  const capacitor = window.Capacitor;
-  return typeof capacitor?.isNativePlatform === "function" && capacitor.isNativePlatform();
+  return isCapacitorShell();
 }

@@ -5,6 +5,7 @@ import { TrimmedNonEmptyString } from "./baseSchemas";
 export const BACKEND_PROFILE_ID_MAX_LENGTH = 64;
 export const BACKEND_PROFILE_NAME_MAX_LENGTH = 64;
 export const BACKEND_PROFILE_HOST_MAX_LENGTH = 255;
+export const DISCOVERED_BACKEND_NAME_MAX_LENGTH = 128;
 export const MAX_REMOTE_BACKEND_PROFILES = 16;
 
 export const BackendMode = Schema.Literals(["local", "remote"]);
@@ -34,9 +35,23 @@ export const RemoteBackendProfile = Schema.Struct({
 });
 export type RemoteBackendProfile = typeof RemoteBackendProfile.Type;
 
+export const DiscoveredBackend = Schema.Struct({
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(DISCOVERED_BACKEND_NAME_MAX_LENGTH)),
+  host: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(BACKEND_PROFILE_HOST_MAX_LENGTH),
+    Schema.isPattern(/^[a-z0-9.-]+$/i),
+  ),
+  port: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65_535 })),
+  protocol: BackendProtocol.pipe(Schema.withDecodingDefault(() => "ws")),
+});
+export type DiscoveredBackend = typeof DiscoveredBackend.Type;
+
 export const BackendSelection = Schema.Struct({
   mode: BackendMode.pipe(Schema.withConstructorDefault(() => Option.some("local"))),
   profileId: Schema.NullOr(BackendProfileId).pipe(
+    Schema.withConstructorDefault(() => Option.some(null)),
+  ),
+  discoveredBackend: Schema.NullOr(DiscoveredBackend).pipe(
     Schema.withConstructorDefault(() => Option.some(null)),
   ),
 });

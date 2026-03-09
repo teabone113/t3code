@@ -17,6 +17,7 @@ import { autoUpdater } from "electron-updater";
 
 import type { ContextMenuItem } from "@t3tools/contracts";
 import { NetService } from "@t3tools/shared/Net";
+import { discoverBonjourBackends } from "@t3tools/shared/discovery";
 import { RotatingFileSink } from "@t3tools/shared/logging";
 import { showDesktopConfirmDialog } from "./confirmDialog";
 import { fixPath } from "./fixPath";
@@ -39,6 +40,7 @@ fixPath();
 const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 const BACKEND_CONNECTION_GET_CHANNEL = "desktop:backend-connection:get";
 const BACKEND_CONNECTION_SET_CHANNEL = "desktop:backend-connection:set";
+const BACKEND_DISCOVERY_CHANNEL = "desktop:backend-discovery:discover";
 const CONFIRM_CHANNEL = "desktop:confirm";
 const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
 const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
@@ -1101,6 +1103,17 @@ function registerIpcHandlers(): void {
   ipcMain.handle(BACKEND_CONNECTION_SET_CHANNEL, async (_event, input: unknown) =>
     applyDesktopShellBackendConnection(normalizeDesktopShellBackendConnection(input)),
   );
+
+  ipcMain.removeHandler(BACKEND_DISCOVERY_CHANNEL);
+  ipcMain.handle(BACKEND_DISCOVERY_CHANNEL, async (_event, timeoutMs: unknown) => {
+    const normalizedTimeoutMs =
+      typeof timeoutMs === "number" && Number.isFinite(timeoutMs)
+        ? Math.max(250, Math.min(Math.floor(timeoutMs), 10_000))
+        : null;
+    return discoverBonjourBackends(
+      normalizedTimeoutMs === null ? undefined : { timeoutMs: normalizedTimeoutMs },
+    );
+  });
 
   ipcMain.removeHandler(PICK_FOLDER_CHANNEL);
   ipcMain.handle(PICK_FOLDER_CHANNEL, async () => {

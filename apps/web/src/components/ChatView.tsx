@@ -51,7 +51,7 @@ import { gitBranchesQueryOptions, gitCreateWorktreeMutationOptions } from "~/lib
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
 
-import { isElectron } from "../env";
+import { isCapacitorShell, isElectron } from "../env";
 import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
 import {
   type ComposerSlashCommand,
@@ -218,6 +218,7 @@ import { selectThreadTerminalState, useTerminalStateStore } from "../terminalSta
 import { clamp } from "effect/Number";
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./ComposerPromptEditor";
 import { estimateTimelineMessageHeight } from "./timelineHeight";
+import { useCompactPhoneShell } from "../hooks/useCompactPhoneShell";
 
 function formatMessageMeta(createdAt: string, duration: string | null): string {
   if (!duration) return formatTimestamp(createdAt);
@@ -590,6 +591,7 @@ interface ChatViewProps {
 }
 
 export default function ChatView({ threadId }: ChatViewProps) {
+  const isCompactPhoneShell = useCompactPhoneShell();
   const threads = useStore((store) => store.threads);
   const projects = useStore((store) => store.projects);
   const markThreadVisited = useStore((store) => store.markThreadVisited);
@@ -659,6 +661,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [terminalFocusRequestId, setTerminalFocusRequestId] = useState(0);
   const [composerHighlightedItemId, setComposerHighlightedItemId] = useState<string | null>(null);
+  const [isCompactPhoneComposerFocused, setIsCompactPhoneComposerFocused] = useState(false);
+  const [isCompactPhoneKeyboardVisible, setIsCompactPhoneKeyboardVisible] = useState(false);
   const [attachmentPreviewHandoffByMessageId, setAttachmentPreviewHandoffByMessageId] = useState<
     Record<string, string[]>
   >({});
@@ -692,6 +696,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const activeComposerMenuItemRef = useRef<ComposerCommandItem | null>(null);
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewHandoffTimeoutByMessageIdRef = useRef<Record<string, number>>({});
+  const compactPhoneBaselineViewportHeightRef = useRef(0);
   const sendInFlightRef = useRef(false);
   const dragDepthRef = useRef(0);
   const terminalOpenByThreadRef = useRef<Record<string, boolean>>({});
@@ -1348,11 +1353,30 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const focusComposer = useCallback(() => {
     composerEditorRef.current?.focusAtEnd();
   }, []);
+  const shouldAutoFocusComposer = !isCapacitorShell();
+  const dismissComposerKeyboard = useCallback(() => {
+    if (!isCapacitorShell()) {
+      return;
+    }
+    const blurActiveElement = () => {
+      composerEditorRef.current?.blur();
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+    };
+
+    blurActiveElement();
+    window.setTimeout(blurActiveElement, 0);
+    window.requestAnimationFrame(blurActiveElement);
+  }, []);
   const scheduleComposerFocus = useCallback(() => {
+    if (!shouldAutoFocusComposer) {
+      return;
+    }
     window.requestAnimationFrame(() => {
       focusComposer();
     });
-  }, [focusComposer]);
+  }, [focusComposer, shouldAutoFocusComposer]);
   const setTerminalOpen = useCallback(
     (open: boolean) => {
       if (!activeThreadId) return;
@@ -1782,6 +1806,28 @@ export default function ChatView({ threadId }: ChatViewProps) {
     scrollMessagesToBottom();
     scheduleStickToBottom();
   }, [cancelPendingStickToBottom, scheduleStickToBottom, scrollMessagesToBottom]);
+  const keepComposerVisible = useCallback(() => {
+    if (!isCompactPhoneShell) {
+      return;
+    }
+
+    const composerForm = composerFormRef.current;
+    if (!composerForm) {
+      return;
+    }
+
+    const alignComposer = () => {
+      composerForm.scrollIntoView({ block: "nearest", inline: "nearest" });
+      if (shouldAutoScrollRef.current) {
+        scheduleStickToBottom();
+      }
+    };
+
+    alignComposer();
+    window.requestAnimationFrame(alignComposer);
+    window.setTimeout(alignComposer, 120);
+    window.setTimeout(alignComposer, 260);
+  }, [isCompactPhoneShell, scheduleStickToBottom]);
   const onMessagesScroll = useCallback(() => {
     const scrollContainer = messagesScrollRef.current;
     if (!scrollContainer) return;
@@ -1893,6 +1939,43 @@ export default function ChatView({ threadId }: ChatViewProps) {
     scheduleStickToBottom();
   }, [messageCount, scheduleStickToBottom]);
   useEffect(() => {
+    if (!isCompactPhoneShell) {
+      setIsCompactPhoneKeyboardVisible(false);
+      return;
+    }
+
+    const syncViewportState = () => {
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const baselineHeight = compactPhoneBaselineViewportHeightRef.current;
+      const nextBaselineHeight =
+        baselineHeight === 0 || (!isCompactPhoneComposerFocused && viewportHeight > baselineHeight)
+          ? viewportHeight
+          : baselineHeight;
+
+      compactPhoneBaselineViewportHeightRef.current = nextBaselineHeight;
+
+      const nextKeyboardVisible = nextBaselineHeight - viewportHeight > 100;
+      setIsCompactPhoneKeyboardVisible((current) =>
+        current === nextKeyboardVisible ? current : nextKeyboardVisible,
+      );
+
+      if (nextKeyboardVisible && isCompactPhoneComposerFocused) {
+        keepComposerVisible();
+      }
+    };
+
+    syncViewportState();
+    window.addEventListener("resize", syncViewportState);
+    window.visualViewport?.addEventListener("resize", syncViewportState);
+
+    return () => {
+      window.removeEventListener("resize", syncViewportState);
+      window.visualViewport?.removeEventListener("resize", syncViewportState);
+    };
+  }, [isCompactPhoneComposerFocused, isCompactPhoneShell, keepComposerVisible]);
+  const isCompactPhoneComposerEngaged =
+    isCompactPhoneShell && (isCompactPhoneComposerFocused || isCompactPhoneKeyboardVisible);
+  useEffect(() => {
     if (phase !== "running") return;
     if (!shouldAutoScrollRef.current) return;
     scheduleStickToBottom();
@@ -1919,6 +2002,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   }, [activeThread?.id]);
 
   useEffect(() => {
+    if (!shouldAutoFocusComposer) return;
     if (!activeThread?.id || terminalState.terminalOpen) return;
     const frame = window.requestAnimationFrame(() => {
       focusComposer();
@@ -1926,7 +2010,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [activeThread?.id, focusComposer, terminalState.terminalOpen]);
+  }, [activeThread?.id, focusComposer, shouldAutoFocusComposer, terminalState.terminalOpen]);
 
   useEffect(() => {
     composerImagesRef.current = composerImages;
@@ -2155,6 +2239,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
       return;
     } else if (previous && !current) {
       terminalOpenByThreadRef.current[activeThreadId] = current;
+      if (!shouldAutoFocusComposer) {
+        return;
+      }
       const frame = window.requestAnimationFrame(() => {
         focusComposer();
       });
@@ -2164,7 +2251,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     }
 
     terminalOpenByThreadRef.current[activeThreadId] = current;
-  }, [activeThreadId, focusComposer, terminalState.terminalOpen]);
+  }, [activeThreadId, focusComposer, shouldAutoFocusComposer, terminalState.terminalOpen]);
 
   useEffect(() => {
     const isTerminalFocused = (): boolean => {
@@ -2400,6 +2487,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     const api = readNativeApi();
     if (!api || !activeThread || isSendBusy || isConnecting || sendInFlightRef.current) return;
     if (activePendingProgress) {
+      dismissComposerKeyboard();
       onAdvanceActivePendingUserInput();
       return;
     }
@@ -2414,6 +2502,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       setComposerHighlightedItemId(null);
       setComposerCursor(0);
       setComposerTrigger(null);
+      dismissComposerKeyboard();
       await onSubmitPlanFollowUp({
         text: followUp.text,
         interactionMode: followUp.interactionMode,
@@ -2429,6 +2518,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       setComposerHighlightedItemId(null);
       setComposerCursor(0);
       setComposerTrigger(null);
+      dismissComposerKeyboard();
       return;
     }
     if (!trimmed && composerImages.length === 0) return;
@@ -2496,6 +2586,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     setComposerHighlightedItemId(null);
     setComposerCursor(0);
     setComposerTrigger(null);
+    dismissComposerKeyboard();
 
     let createdServerThreadForLocalDraft = false;
     let turnStartSucceeded = false;
@@ -2874,6 +2965,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       ]);
       shouldAutoScrollRef.current = true;
       forceStickToBottom();
+      dismissComposerKeyboard();
 
       try {
         await persistThreadSettingsForNextTurn({
@@ -2924,6 +3016,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     [
       activeThread,
       beginSendPhase,
+      dismissComposerKeyboard,
       forceStickToBottom,
       isConnecting,
       isSendBusy,
@@ -3383,7 +3476,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
       <header
         className={cn(
           "border-b border-border px-3 sm:px-5",
-          isElectron ? "drag-region flex h-[52px] items-center" : "py-2 sm:py-3",
+          isElectron
+            ? "drag-region flex h-[52px] items-center"
+            : isCompactPhoneShell
+              ? "pt-4 pb-2"
+              : "py-2 sm:py-3",
         )}
       >
         <ChatHeader
@@ -3608,6 +3705,19 @@ export default function ChatView({ threadId }: ChatViewProps) {
                         : "Ask anything, @tag files/folders, or use /model"
                 }
                 disabled={isConnecting || isComposerApprovalState}
+                onFocus={() => {
+                  if (!isCompactPhoneShell) {
+                    return;
+                  }
+                  setIsCompactPhoneComposerFocused(true);
+                  keepComposerVisible();
+                }}
+                onBlur={() => {
+                  if (!isCompactPhoneShell) {
+                    return;
+                  }
+                  setIsCompactPhoneComposerFocused(false);
+                }}
               />
             </div>
 
@@ -3621,8 +3731,22 @@ export default function ChatView({ threadId }: ChatViewProps) {
                 />
               </div>
             ) : (
-              <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 pb-2.5 sm:flex-nowrap sm:gap-0 sm:px-3 sm:pb-3">
-                <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:min-w-max sm:overflow-visible">
+              <div
+                className={cn(
+                  "px-2.5 pb-2.5 sm:px-3 sm:pb-3",
+                  isCompactPhoneShell
+                    ? "flex flex-col gap-2"
+                    : "flex flex-wrap items-center justify-between gap-2 sm:flex-nowrap sm:gap-0",
+                )}
+              >
+                <div
+                  className={cn(
+                    "flex min-w-0 items-center gap-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+                    isCompactPhoneShell
+                      ? "w-full overflow-x-auto pb-0.5"
+                      : "flex-1 overflow-x-auto sm:min-w-max sm:overflow-visible",
+                  )}
+                >
                   {/* Provider/model picker */}
                   <ProviderModelPicker
                     provider={selectedProvider}
@@ -3663,7 +3787,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                     }
                   >
                     <BotIcon />
-                    <span className="sr-only sm:not-sr-only">
+                    <span className={cn(isCompactPhoneShell ? "not-sr-only" : "sr-only sm:not-sr-only")}>
                       {interactionMode === "plan" ? "Plan" : "Chat"}
                     </span>
                   </Button>
@@ -3689,14 +3813,25 @@ export default function ChatView({ threadId }: ChatViewProps) {
                     }
                   >
                     {runtimeMode === "full-access" ? <LockOpenIcon /> : <LockIcon />}
-                    <span className="sr-only sm:not-sr-only">
-                      {runtimeMode === "full-access" ? "Full access" : "Supervised"}
+                    <span className={cn(isCompactPhoneShell ? "not-sr-only" : "sr-only sm:not-sr-only")}>
+                      {isCompactPhoneShell
+                        ? runtimeMode === "full-access"
+                          ? "Full"
+                          : "Review"
+                        : runtimeMode === "full-access"
+                          ? "Full access"
+                          : "Supervised"}
                     </span>
                   </Button>
                 </div>
 
                 {/* Right side: send / stop button */}
-                <div className="flex shrink-0 items-center gap-2">
+                <div
+                  className={cn(
+                    "flex shrink-0 items-center gap-2",
+                    isCompactPhoneShell && "w-full justify-between",
+                  )}
+                >
                   {isPreparingWorktree ? (
                     <span className="text-muted-foreground/70 text-xs">Preparing worktree...</span>
                   ) : null}
@@ -3795,61 +3930,63 @@ export default function ChatView({ threadId }: ChatViewProps) {
                         </div>
                       )
                     ) : (
-                      <button
-                        type="submit"
-                        className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/90 text-primary-foreground transition-all duration-150 hover:bg-primary hover:scale-105 disabled:opacity-30 disabled:hover:scale-100 sm:h-8 sm:w-8"
-                        disabled={
-                          isSendBusy ||
-                          isConnecting ||
-                          (!prompt.trim() && composerImages.length === 0)
-                        }
-                        aria-label={
-                          isConnecting
-                            ? "Connecting"
-                            : isPreparingWorktree
-                              ? "Preparing worktree"
-                              : isSendBusy
-                                ? "Sending"
-                                : "Send message"
-                        }
-                      >
-                        {isConnecting || isSendBusy ? (
-                          <svg
-                            width="14"
-                            height="14"
-                            viewBox="0 0 14 14"
-                            fill="none"
-                            className="animate-spin"
-                            aria-hidden="true"
-                          >
-                            <circle
-                              cx="7"
-                              cy="7"
-                              r="5.5"
-                              stroke="currentColor"
-                              strokeWidth="1.5"
-                              strokeLinecap="round"
-                              strokeDasharray="20 12"
-                            />
-                          </svg>
-                        ) : (
-                          <svg
-                            width="14"
-                            height="14"
-                            viewBox="0 0 14 14"
-                            fill="none"
-                            aria-hidden="true"
-                          >
-                            <path
-                              d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
-                              stroke="currentColor"
-                              strokeWidth="1.8"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                          </svg>
-                        )}
-                      </button>
+                      !isCompactPhoneShell || isCompactPhoneComposerEngaged ? (
+                        <button
+                          type="submit"
+                          className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/90 text-primary-foreground transition-all duration-150 hover:bg-primary hover:scale-105 disabled:opacity-30 disabled:hover:scale-100 sm:h-8 sm:w-8"
+                          disabled={
+                            isSendBusy ||
+                            isConnecting ||
+                            (!prompt.trim() && composerImages.length === 0)
+                          }
+                          aria-label={
+                            isConnecting
+                              ? "Connecting"
+                              : isPreparingWorktree
+                                ? "Preparing worktree"
+                                : isSendBusy
+                                  ? "Sending"
+                                  : "Send message"
+                          }
+                        >
+                          {isConnecting || isSendBusy ? (
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 14 14"
+                              fill="none"
+                              className="animate-spin"
+                              aria-hidden="true"
+                            >
+                              <circle
+                                cx="7"
+                                cy="7"
+                                r="5.5"
+                                stroke="currentColor"
+                                strokeWidth="1.5"
+                                strokeLinecap="round"
+                                strokeDasharray="20 12"
+                              />
+                            </svg>
+                          ) : (
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 14 14"
+                              fill="none"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          )}
+                        </button>
+                      ) : null
                     )
                   ) : null}
                 </div>
@@ -4004,71 +4141,102 @@ const ChatHeader = memo(function ChatHeader({
   onUpdateProjectScript,
   onToggleDiff,
 }: ChatHeaderProps) {
+  const isCompactPhoneShell = useCompactPhoneShell();
+  const isMobileShell = isCapacitorShell();
+  const showDesktopOnlyHeaderControls = !isMobileShell;
+  const headerControls = (
+    <>
+      {showDesktopOnlyHeaderControls && activeProjectScripts && (
+        <ProjectScriptsControl
+          scripts={activeProjectScripts}
+          keybindings={keybindings}
+          preferredScriptId={preferredScriptId}
+          onRunScript={onRunProjectScript}
+          onAddScript={onAddProjectScript}
+          onUpdateScript={onUpdateProjectScript}
+        />
+      )}
+      {showDesktopOnlyHeaderControls && activeProjectName && (
+        <OpenInPicker
+          keybindings={keybindings}
+          availableEditors={availableEditors}
+          openInCwd={openInCwd}
+        />
+      )}
+      {activeProjectName && <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} />}
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Toggle
+              className="shrink-0"
+              pressed={diffOpen}
+              onPressedChange={onToggleDiff}
+              aria-label="Toggle diff panel"
+              variant="outline"
+              size="xs"
+              disabled={!isGitRepo}
+            >
+              <DiffIcon className="size-3" />
+            </Toggle>
+          }
+        />
+        <TooltipPopup side="bottom">
+          {!isGitRepo
+            ? "Diff panel is unavailable because this project is not a git repository."
+            : diffToggleShortcutLabel
+              ? `Toggle diff panel (${diffToggleShortcutLabel})`
+              : "Toggle diff panel"}
+        </TooltipPopup>
+      </Tooltip>
+    </>
+  );
+
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-2">
-      <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
-        <SidebarTrigger className="size-7 shrink-0 md:hidden" />
-        <h2
-          className="min-w-0 shrink truncate text-sm font-medium text-foreground"
-          title={activeThreadTitle}
-        >
-          {activeThreadTitle}
-        </h2>
-        {activeProjectName && (
-          <Badge variant="outline" className="max-w-28 shrink-0 truncate">
-            {activeProjectName}
-          </Badge>
-        )}
-        {activeProjectName && !isGitRepo && (
-          <Badge variant="outline" className="shrink-0 text-[10px] text-amber-700">
-            No Git
-          </Badge>
-        )}
+    <div className={cn("min-w-0 flex-1", isCompactPhoneShell ? "space-y-1.5" : "flex items-center gap-2")}>
+      <div className="flex min-w-0 items-start gap-2 overflow-hidden sm:gap-3">
+        <div className="flex min-w-0 flex-1 items-start gap-2 overflow-hidden sm:gap-3">
+          <SidebarTrigger className="size-7 shrink-0 md:hidden" />
+          <div className="min-w-0 flex-1">
+            <h2
+              className="min-w-0 truncate text-sm font-medium text-foreground"
+              title={activeThreadTitle}
+            >
+              {activeThreadTitle}
+            </h2>
+            {isCompactPhoneShell && activeProjectName ? (
+              <p className="truncate text-[11px] text-muted-foreground">{activeProjectName}</p>
+            ) : null}
+          </div>
+          {!isCompactPhoneShell && activeProjectName && (
+            <Badge variant="outline" className="max-w-28 shrink-0 truncate">
+              {activeProjectName}
+            </Badge>
+          )}
+          {!isCompactPhoneShell && activeProjectName && !isGitRepo && (
+            <Badge variant="outline" className="shrink-0 text-[10px] text-amber-700">
+              No Git
+            </Badge>
+          )}
+        </div>
+        {isCompactPhoneShell ? (
+          <div className="flex shrink-0 items-center gap-2 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {headerControls}
+          </div>
+        ) : null}
       </div>
-      <div className="@container/header-actions flex min-w-0 flex-1 items-center justify-end gap-2 @sm/header-actions:gap-3">
-        {activeProjectScripts && (
-          <ProjectScriptsControl
-            scripts={activeProjectScripts}
-            keybindings={keybindings}
-            preferredScriptId={preferredScriptId}
-            onRunScript={onRunProjectScript}
-            onAddScript={onAddProjectScript}
-            onUpdateScript={onUpdateProjectScript}
-          />
-        )}
-        {activeProjectName && (
-          <OpenInPicker
-            keybindings={keybindings}
-            availableEditors={availableEditors}
-            openInCwd={openInCwd}
-          />
-        )}
-        {activeProjectName && <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} />}
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Toggle
-                className="shrink-0"
-                pressed={diffOpen}
-                onPressedChange={onToggleDiff}
-                aria-label="Toggle diff panel"
-                variant="outline"
-                size="xs"
-                disabled={!isGitRepo}
-              >
-                <DiffIcon className="size-3" />
-              </Toggle>
-            }
-          />
-          <TooltipPopup side="bottom">
-            {!isGitRepo
-              ? "Diff panel is unavailable because this project is not a git repository."
-              : diffToggleShortcutLabel
-                ? `Toggle diff panel (${diffToggleShortcutLabel})`
-                : "Toggle diff panel"}
-          </TooltipPopup>
-        </Tooltip>
-      </div>
+      {isCompactPhoneShell ? (
+        activeProjectName && !isGitRepo ? (
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="shrink-0 text-[10px] text-amber-700">
+              No Git
+            </Badge>
+          </div>
+        ) : null
+      ) : (
+        <div className="@container/header-actions flex min-w-0 flex-1 items-center justify-end gap-2 @sm/header-actions:gap-3">
+          {headerControls}
+        </div>
+      )}
     </div>
   );
 });

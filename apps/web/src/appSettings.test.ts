@@ -101,12 +101,14 @@ describe("normalizeBackendSelection", () => {
         {
           mode: "remote",
           profileId: "missing",
+          discoveredBackend: null,
         },
         [],
       ),
     ).toEqual({
       mode: "local",
       profileId: null,
+      discoveredBackend: null,
     });
   });
 });

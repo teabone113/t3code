@@ -10,6 +10,7 @@ import { isCapacitorShell, isElectronShell } from "./env";
 import { getRouter } from "./router";
 import { APP_DISPLAY_NAME } from "./branding";
 import { shouldBootToConnectionSettings } from "./backendConnection";
+import { installMobileViewportSizing } from "./mobileViewport";
 
 const history = isElectronShell() || isCapacitorShell() ? createHashHistory() : createBrowserHistory();
 
@@ -23,9 +24,16 @@ if ((isElectronShell() || isCapacitorShell()) && shouldBootToConnectionSettings(
 const router = getRouter(history);
 
 document.title = APP_DISPLAY_NAME;
+const disposeMobileViewportSizing = installMobileViewportSizing();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <RouterProvider router={router} />
   </React.StrictMode>,
 );
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    disposeMobileViewportSizing();
+  });
+}

@@ -5,6 +5,7 @@ import { newCommandId } from "../lib/utils";
 import { readNativeApi } from "../nativeApi";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useStore } from "../store";
+import { useCompactPhoneShell } from "../hooks/useCompactPhoneShell";
 import {
   EnvMode,
   resolveDraftEnvModeAfterBranchChange,
@@ -26,6 +27,7 @@ export default function BranchToolbar({
   envLocked,
   onComposerFocusRequest,
 }: BranchToolbarProps) {
+  const isCompactPhoneShell = useCompactPhoneShell();
   const threads = useStore((store) => store.threads);
   const projects = useStore((store) => store.projects);
   const setThreadBranchAction = useStore((store) => store.setThreadBranch);
@@ -101,7 +103,13 @@ export default function BranchToolbar({
   if (!activeThreadId || !activeProject) return null;
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-5 pb-3 pt-1">
+    <div
+      className={
+        isCompactPhoneShell
+          ? "mx-auto flex w-full max-w-3xl items-center justify-between px-3 pb-1 pt-0.5"
+          : "mx-auto flex w-full max-w-3xl items-center justify-between px-5 pb-3 pt-1"
+      }
+    >
       <div className="flex items-center gap-2">
         {envLocked || activeWorktreePath ? (
           <span className="border border-transparent px-[calc(--spacing(2)-1px)] text-sm font-medium text-muted-foreground/70 sm:text-xs">

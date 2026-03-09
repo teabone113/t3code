@@ -25,7 +25,7 @@ function ChatRouteLayout() {
   }, [navigate]);
 
   return (
-    <SidebarProvider defaultOpen>
+    <SidebarProvider defaultOpen defaultMobileOpen>
       <Sidebar
         side="left"
         collapsible="offcanvas"

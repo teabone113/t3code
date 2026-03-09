@@ -397,6 +397,8 @@ interface ComposerPromptEditorProps {
   disabled: boolean;
   placeholder: string;
   className?: string;
+  onFocus?: () => void;
+  onBlur?: () => void;
   onChange: (nextValue: string, nextCursor: number, cursorAdjacentToMention: boolean) => void;
   onCommandKeyDown?: (
     key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab",
@@ -626,6 +628,8 @@ function ComposerPromptEditorInner({
   disabled,
   placeholder,
   className,
+  onFocus,
+  onBlur,
   onChange,
   onCommandKeyDown,
   onPaste,
@@ -750,16 +754,18 @@ function ComposerPromptEditorInner({
         contentEditable={
           <ContentEditable
             className={cn(
-              "block max-h-[200px] min-h-17.5 w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-[14px] leading-relaxed text-foreground focus:outline-none",
+              "block max-h-[200px] min-h-17.5 w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-base leading-relaxed text-foreground focus:outline-none sm:text-[14px]",
               className,
             )}
             aria-placeholder={placeholder}
             placeholder={<span />}
+            onFocus={onFocus}
+            onBlur={onBlur}
             onPaste={onPaste}
           />
         }
         placeholder={
-          <div className="pointer-events-none absolute inset-0 text-[14px] leading-relaxed text-muted-foreground/35">
+          <div className="pointer-events-none absolute inset-0 text-base leading-relaxed text-muted-foreground/35 sm:text-[14px]">
             {placeholder}
           </div>
         }
@@ -777,7 +783,18 @@ function ComposerPromptEditorInner({
 
 export const ComposerPromptEditor = forwardRef<ComposerPromptEditorHandle, ComposerPromptEditorProps>(
   function ComposerPromptEditor(
-    { value, cursor, disabled, placeholder, className, onChange, onCommandKeyDown, onPaste },
+    {
+      value,
+      cursor,
+      disabled,
+      placeholder,
+      className,
+      onFocus,
+      onBlur,
+      onChange,
+      onCommandKeyDown,
+      onPaste,
+    },
     ref,
   ) {
     const initialValueRef = useRef(value);
@@ -803,6 +820,8 @@ export const ComposerPromptEditor = forwardRef<ComposerPromptEditorHandle, Compo
           cursor={cursor}
           disabled={disabled}
           placeholder={placeholder}
+          {...(onFocus ? { onFocus } : {})}
+          {...(onBlur ? { onBlur } : {})}
           onChange={onChange}
           onPaste={onPaste}
           editorRef={ref}

@@ -15,7 +15,7 @@ import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import {
   extractTerminalLinks,
   isTerminalLinkActivation,
-  preferredTerminalEditor,
+  preferredPathOpenInput,
   resolvePathLinkTarget,
 } from "../terminal-links";
 import { isTerminalClearShortcut, terminalNavigationShortcutData } from "../keybindings";
@@ -236,7 +236,7 @@ function TerminalViewport({
               }
 
               const target = resolvePathLinkTarget(match.text, cwd);
-              void api.shell.openInEditor(target, preferredTerminalEditor()).catch((error) => {
+              void api.shell.openPathWithPreferences(preferredPathOpenInput(target)).catch((error) => {
                 writeSystemMessage(
                   latestTerminal,
                   error instanceof Error ? error.message : "Unable to open path",

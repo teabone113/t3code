@@ -92,6 +92,7 @@ export interface GitCoreShape {
   readonly pushCurrentBranch: (
     cwd: string,
     fallbackBranch: string | null,
+    preferredRemoteName?: string | undefined,
   ) => Effect.Effect<GitPushResult, GitCommandError>;
 
   /**

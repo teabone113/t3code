@@ -3,8 +3,11 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useState } from "react";
 import {
   BackendSelection,
+  EDITORS,
+  TERMINAL_APPS,
   type DiscoveredBackend,
   type BackendProtocol,
+  type FolderOpenTargetId,
   type ProviderKind,
   type RemoteBackendProfile,
 } from "@t3tools/contracts";
@@ -12,7 +15,9 @@ import { getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
 import { ZapIcon } from "lucide-react";
 
 import {
+  APP_FONT_SCALE_OPTIONS,
   APP_SERVICE_TIER_OPTIONS,
+  resolveAppFontScale,
   type AppSettings,
   normalizeBackendSelection,
   normalizeRemoteBackendProfiles,
@@ -25,8 +30,9 @@ import { buildRemoteBackendWsUrl, resolveBackendConnection } from "../backendCon
 import { isCapacitorShell, isElectron } from "../env";
 import { useTheme } from "../hooks/useTheme";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
+import { isMacPlatform, isWindowsPlatform } from "../lib/utils";
 import { ensureNativeApi, resetNativeApi } from "../nativeApi";
-import { preferredTerminalEditor } from "../terminal-links";
+import { preferredPathOpenInput } from "../terminal-links";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import {
@@ -56,6 +62,47 @@ const THEME_OPTIONS = [
     description: "Always use the dark theme.",
   },
 ] as const;
+const AUTO_OPEN_TOOL_VALUE = "__auto__";
+const APPEARANCE_FONT_CONTEXT_OPTIONS: Array<{
+  key: "uiFontScale" | "contentFontScale" | "monoFontScale";
+  label: string;
+  description: string;
+}> = [
+  {
+    key: "uiFontScale",
+    label: "Interface text",
+    description: "Sidebar, settings, controls, and general chrome.",
+  },
+  {
+    key: "contentFontScale",
+    label: "Conversation text",
+    description: "Messages, plans, and long-form reading surfaces.",
+  },
+  {
+    key: "monoFontScale",
+    label: "Monospace text",
+    description: "Composer, code, diffs, and terminal-style surfaces.",
+  },
+];
+
+function fileManagerLabelForPlatform(platform: string): string {
+  return isMacPlatform(platform)
+    ? "Finder"
+    : isWindowsPlatform(platform)
+      ? "Explorer"
+      : "Files";
+}
+
+function resolveOpenToolLabel(target: FolderOpenTargetId, platform: string): string {
+  if (target === "file-manager") {
+    return fileManagerLabelForPlatform(platform);
+  }
+  return (
+    EDITORS.find((editor) => editor.id === target)?.label ??
+    TERMINAL_APPS.find((terminal) => terminal.id === target)?.label ??
+    target
+  );
+}
 
 function createBackendProfileId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -192,6 +239,25 @@ function SettingsRouteView() {
   const codexHomePath = settings.codexHomePath;
   const codexServiceTier = settings.codexServiceTier;
   const keybindingsConfigPath = serverConfigQuery.data?.keybindingsConfigPath ?? null;
+  const availableEditors = serverConfigQuery.data?.availableEditors ?? [];
+  const availableTerminalApps = serverConfigQuery.data?.availableTerminalApps ?? [];
+  const platform = typeof navigator === "undefined" ? "" : navigator.platform;
+  const availableFileToolOptions = availableEditors
+    .filter((editor) => editor !== "file-manager")
+    .map((editor) => ({
+      value: editor,
+      label: resolveOpenToolLabel(editor, platform),
+    }));
+  const availableFolderToolOptions = [
+    ...availableEditors.map((editor) => ({
+      value: editor as FolderOpenTargetId,
+      label: resolveOpenToolLabel(editor, platform),
+    })),
+    ...availableTerminalApps.map((terminal) => ({
+      value: terminal as FolderOpenTargetId,
+      label: resolveOpenToolLabel(terminal, platform),
+    })),
+  ];
   const remoteBackendProfiles = settings.remoteBackendProfiles;
   const activeBackendConnection = resolveBackendConnection();
   const startupRole = window.desktopBridge?.getStartupRole?.() ?? null;
@@ -208,7 +274,7 @@ function SettingsRouteView() {
     setIsOpeningKeybindings(true);
     const api = ensureNativeApi();
     void api.shell
-      .openInEditor(keybindingsConfigPath, preferredTerminalEditor())
+      .openPathWithPreferences(preferredPathOpenInput(keybindingsConfigPath))
       .catch((error) => {
         setOpenKeybindingsError(
           error instanceof Error ? error.message : "Unable to open keybindings file.",
@@ -426,8 +492,8 @@ function SettingsRouteView() {
   );
 
   return (
-    <SidebarInset className="safe-area-shell app-shell-frame min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
+    <SidebarInset className="safe-area-shell app-shell-frame app-font-context-ui min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
+      <div className="app-font-context-ui flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
         {isElectron && (
           <div className="drag-region flex h-[52px] shrink-0 items-center border-b border-border px-5">
             <span className="text-xs font-medium tracking-wide text-muted-foreground/70">
@@ -743,7 +809,7 @@ function SettingsRouteView() {
               <div className="mb-4">
                 <h2 className="text-sm font-medium text-foreground">Appearance</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Choose how T3 Code handles light and dark mode.
+                  Choose how T3 Code handles theme and font sizing across the shell.
                 </p>
               </div>
 
@@ -780,6 +846,39 @@ function SettingsRouteView() {
               <p className="mt-4 text-xs text-muted-foreground">
                 Active theme: <span className="font-medium text-foreground">{resolvedTheme}</span>
               </p>
+
+              <div className="mt-5 grid gap-4 md:grid-cols-3">
+                {APPEARANCE_FONT_CONTEXT_OPTIONS.map((option) => (
+                  <label key={option.key} className="block space-y-1">
+                    <span className="text-xs font-medium text-foreground">{option.label}</span>
+                    <Select
+                      value={settings[option.key]}
+                      onValueChange={(value) => {
+                        updateSettings({
+                          [option.key]: value,
+                        } as Pick<AppSettings, typeof option.key>);
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectPopup>
+                        {APP_FONT_SCALE_OPTIONS.map((scaleOption) => (
+                          <SelectItem key={scaleOption.value} value={scaleOption.value}>
+                            {scaleOption.label}
+                          </SelectItem>
+                        ))}
+                      </SelectPopup>
+                    </Select>
+                    <span className="text-xs text-muted-foreground">
+                      {option.description}{" "}
+                      <span className="font-medium text-foreground/80">
+                        {Math.round(resolveAppFontScale(settings[option.key]) * 100)}%
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
             </section>
 
             <section className="rounded-2xl border border-border bg-card p-5">
@@ -1092,6 +1191,88 @@ function SettingsRouteView() {
                 {openKeybindingsError ? (
                   <p className="text-xs text-destructive">{openKeybindingsError}</p>
                 ) : null}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-4">
+                <h2 className="text-sm font-medium text-foreground">Open tools</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Choose which installed tool should open file links and folder links from thread
+                  output. The top-bar <code>Open</code> button still controls project-level opens
+                  separately.
+                </p>
+              </div>
+
+              <div className="space-y-4">
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">Open file links with</span>
+                  <Select
+                    items={[
+                      { value: AUTO_OPEN_TOOL_VALUE, label: "Automatic" },
+                      ...availableFileToolOptions,
+                    ]}
+                    value={settings.defaultFileOpenTool ?? AUTO_OPEN_TOOL_VALUE}
+                    onValueChange={(value) => {
+                      if (!value) return;
+                      updateSettings({
+                        defaultFileOpenTool:
+                          value === AUTO_OPEN_TOOL_VALUE ? null : (value as typeof settings.defaultFileOpenTool),
+                      });
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectPopup alignItemWithTrigger={false}>
+                      <SelectItem value={AUTO_OPEN_TOOL_VALUE}>Automatic</SelectItem>
+                      {availableFileToolOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectPopup>
+                  </Select>
+                  <span className="text-xs text-muted-foreground">
+                    Automatic uses your preferred editor if no explicit tool is selected.
+                  </span>
+                </label>
+
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">
+                    Open folder links with
+                  </span>
+                  <Select
+                    items={[
+                      { value: AUTO_OPEN_TOOL_VALUE, label: "Automatic" },
+                      ...availableFolderToolOptions,
+                    ]}
+                    value={settings.defaultFolderOpenTool ?? AUTO_OPEN_TOOL_VALUE}
+                    onValueChange={(value) => {
+                      if (!value) return;
+                      updateSettings({
+                        defaultFolderOpenTool:
+                          value === AUTO_OPEN_TOOL_VALUE ? null : (value as typeof settings.defaultFolderOpenTool),
+                      });
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectPopup alignItemWithTrigger={false}>
+                      <SelectItem value={AUTO_OPEN_TOOL_VALUE}>Automatic</SelectItem>
+                      {availableFolderToolOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectPopup>
+                  </Select>
+                  <span className="text-xs text-muted-foreground">
+                    Folder links can open in an editor, Finder/Files, or a terminal app such as
+                    Warp.
+                  </span>
+                </label>
               </div>
             </section>
 

@@ -21,7 +21,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useAppSettings } from "../appSettings";
 import { isCapacitorShell, isElectron } from "../env";
-import { APP_STAGE_LABEL, IOS_SHELL_VERSION } from "../branding";
+import { APP_RELEASE_VERSION, IOS_SHELL_VERSION } from "../branding";
 import { resolveBackendConnection } from "../backendConnection";
 import { newCommandId, newProjectId, newThreadId } from "../lib/utils";
 import { useStore } from "../store";
@@ -964,9 +964,6 @@ export default function Sidebar() {
           <span className="truncate text-sm font-medium tracking-tight text-muted-foreground">
             {isCompactPhoneShell ? "Code iPhone" : "Code iPad"}
           </span>
-          <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
-            {APP_STAGE_LABEL}
-          </span>
           <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium tracking-[0.18em] text-muted-foreground/60">
             {`v ${IOS_SHELL_VERSION}`}
           </span>
@@ -977,8 +974,8 @@ export default function Sidebar() {
           <span className="truncate text-sm font-medium tracking-tight text-muted-foreground">
             Code
           </span>
-          <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
-            {APP_STAGE_LABEL}
+          <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium tracking-[0.18em] text-muted-foreground/60">
+            {`v ${APP_RELEASE_VERSION}`}
           </span>
         </div>
       )}

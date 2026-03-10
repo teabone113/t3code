@@ -6,6 +6,7 @@ import {
   OrchestrationGetFullThreadDiffInput,
   ORCHESTRATION_WS_METHODS,
   OrchestrationGetSnapshotInput,
+  OrchestrationSteerTurnInput,
   OrchestrationGetTurnDiffInput,
   OrchestrationReplayEventsInput,
 } from "./orchestration";
@@ -30,7 +31,7 @@ import {
 } from "./terminal";
 import { KeybindingRule } from "./keybindings";
 import { ProjectSearchEntriesInput, ProjectWriteFileInput } from "./project";
-import { OpenInEditorInput } from "./editor";
+import { OpenInEditorInput, OpenInTerminalInput, OpenPathWithPreferencesInput } from "./editor";
 
 // ── WebSocket RPC Method Names ───────────────────────────────────────
 
@@ -44,6 +45,8 @@ export const WS_METHODS = {
 
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
+  shellOpenInTerminal: "shell.openInTerminal",
+  shellOpenPathWithPreferences: "shell.openPathWithPreferences",
 
   // Git methods
   gitPull: "git.pull",
@@ -96,6 +99,7 @@ const WebSocketRequestBody = Schema.Union([
     Schema.Struct({ command: ClientOrchestrationCommand }),
   ),
   tagRequestBody(ORCHESTRATION_WS_METHODS.getSnapshot, OrchestrationGetSnapshotInput),
+  tagRequestBody(ORCHESTRATION_WS_METHODS.steerTurn, OrchestrationSteerTurnInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.getTurnDiff, OrchestrationGetTurnDiffInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.getFullThreadDiff, OrchestrationGetFullThreadDiffInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.replayEvents, OrchestrationReplayEventsInput),
@@ -106,6 +110,8 @@ const WebSocketRequestBody = Schema.Union([
 
   // Shell methods
   tagRequestBody(WS_METHODS.shellOpenInEditor, OpenInEditorInput),
+  tagRequestBody(WS_METHODS.shellOpenInTerminal, OpenInTerminalInput),
+  tagRequestBody(WS_METHODS.shellOpenPathWithPreferences, OpenPathWithPreferencesInput),
 
   // Git methods
   tagRequestBody(WS_METHODS.gitPull, GitPullInput),

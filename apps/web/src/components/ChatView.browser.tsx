@@ -107,6 +107,7 @@ function createBaseServerConfig(): ServerConfig {
       },
     ],
     availableEditors: [],
+    availableTerminalApps: [],
   };
 }
 
@@ -773,6 +774,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         nextFixture.serverConfig = {
           ...nextFixture.serverConfig,
           availableEditors: ["vscode"],
+          availableTerminalApps: [],
         };
       },
     });

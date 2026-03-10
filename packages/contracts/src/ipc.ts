@@ -39,13 +39,19 @@ import type {
   OrchestrationGetTurnDiffResult,
   OrchestrationEvent,
   OrchestrationReadModel,
+  OrchestrationSteerTurnInput,
+  OrchestrationSteerTurnResult,
 } from "./orchestration";
 import type {
   DesktopShellBackendConnection,
   DesktopStartupRole,
   DiscoveredBackend,
 } from "./connection";
-import { EditorId } from "./editor";
+import {
+  EditorId,
+  OpenPathWithPreferencesInput,
+  TerminalAppId,
+} from "./editor";
 
 export interface ContextMenuItem<T extends string = string> {
   id: T;
@@ -124,6 +130,8 @@ export interface NativeApi {
   };
   shell: {
     openInEditor: (cwd: string, editor: EditorId) => Promise<void>;
+    openInTerminal: (cwd: string, terminal: TerminalAppId) => Promise<void>;
+    openPathWithPreferences: (input: OpenPathWithPreferencesInput) => Promise<void>;
     openExternal: (url: string) => Promise<void>;
   };
   git: {
@@ -152,6 +160,7 @@ export interface NativeApi {
   orchestration: {
     getSnapshot: () => Promise<OrchestrationReadModel>;
     dispatchCommand: (command: ClientOrchestrationCommand) => Promise<{ sequence: number }>;
+    steerTurn: (input: OrchestrationSteerTurnInput) => Promise<OrchestrationSteerTurnResult>;
     getTurnDiff: (input: OrchestrationGetTurnDiffInput) => Promise<OrchestrationGetTurnDiffResult>;
     getFullThreadDiff: (
       input: OrchestrationGetFullThreadDiffInput,

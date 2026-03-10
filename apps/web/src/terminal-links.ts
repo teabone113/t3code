@@ -1,4 +1,11 @@
-import { EDITORS, type EditorId } from "@t3tools/contracts";
+import {
+  EDITORS,
+  TERMINAL_APPS,
+  type EditorId,
+  type FolderOpenTargetId,
+  type OpenPathWithPreferencesInput,
+} from "@t3tools/contracts";
+import { getAppSettingsSnapshot } from "./appSettings";
 import { isMacPlatform } from "./lib/utils";
 
 export type TerminalLinkKind = "url" | "path";
@@ -15,6 +22,7 @@ const FILE_PATH_PATTERN =
   /(?:~\/|\.{1,2}\/|\/|[A-Za-z]:\\|\\\\)[^\s"'`<>]+|[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+(?::\d+){0,2}/g;
 const TRAILING_PUNCTUATION_PATTERN = /[.,;!?]+$/;
 const LAST_EDITOR_KEY = "t3code:last-editor";
+const PROJECT_OPEN_TARGET_KEY = "t3code:last-project-open-target";
 
 function trimClosingDelimiters(value: string): string {
   let output = value.replace(TRAILING_PUNCTUATION_PATTERN, "");
@@ -176,22 +184,44 @@ export function resolvePathLinkTarget(rawPath: string, cwd: string): string {
   return `${resolvedPath}:${line}${column ? `:${column}` : ""}`;
 }
 
-export function preferredTerminalEditor(): EditorId {
-  const fallback = EDITORS.find((editor) => editor.command)?.id ?? EDITORS[0]?.id ?? "cursor";
-
+function readStoredEditor(): EditorId | null {
   if (typeof window === "undefined") {
-    return fallback;
+    return null;
   }
-
   const storedEditor = window.localStorage.getItem(LAST_EDITOR_KEY);
-  if (!storedEditor) {
-    return fallback;
+  const configured = EDITORS.find((editor) => editor.id === storedEditor && editor.command);
+  return configured?.id ?? null;
+}
+
+export function preferredTerminalEditor(): EditorId {
+  return readStoredEditor() ?? EDITORS.find((editor) => editor.command)?.id ?? EDITORS[0]?.id ?? "cursor";
+}
+
+export function preferredFileOpenTool(): EditorId {
+  const configured = getAppSettingsSnapshot().defaultFileOpenTool;
+  return configured ?? preferredTerminalEditor();
+}
+
+export function preferredFolderOpenTool(): FolderOpenTargetId {
+  const configured = getAppSettingsSnapshot().defaultFolderOpenTool;
+  if (configured) {
+    return configured;
   }
 
-  const configured = EDITORS.find((editor) => editor.id === storedEditor);
-  if (!configured?.command) {
-    return fallback;
+  const storedProjectTarget =
+    typeof window === "undefined" ? null : window.localStorage.getItem(PROJECT_OPEN_TARGET_KEY);
+  const storedTerminal = TERMINAL_APPS.find((terminal) => terminal.id === storedProjectTarget);
+  if (storedTerminal) {
+    return storedTerminal.id;
   }
 
-  return configured.id;
+  return preferredTerminalEditor();
+}
+
+export function preferredPathOpenInput(path: string): OpenPathWithPreferencesInput {
+  return {
+    path,
+    fileEditor: preferredFileOpenTool(),
+    folderTarget: preferredFolderOpenTool(),
+  };
 }

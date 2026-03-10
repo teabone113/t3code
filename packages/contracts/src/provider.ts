@@ -94,6 +94,28 @@ export const ProviderTurnStartResult = Schema.Struct({
 });
 export type ProviderTurnStartResult = typeof ProviderTurnStartResult.Type;
 
+export const ProviderSteerTurnInput = Schema.Struct({
+  threadId: ThreadId,
+  expectedTurnId: TurnId,
+  input: Schema.optional(
+    TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
+  ),
+  attachments: Schema.optional(
+    Schema.Array(ChatAttachment).check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS)),
+  ),
+  model: Schema.optional(TrimmedNonEmptyStringSchema),
+  serviceTier: Schema.optional(Schema.NullOr(ProviderServiceTier)),
+  modelOptions: Schema.optional(ProviderModelOptions),
+  interactionMode: Schema.optional(ProviderInteractionMode),
+});
+export type ProviderSteerTurnInput = typeof ProviderSteerTurnInput.Type;
+
+export const ProviderTurnSteerResult = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+});
+export type ProviderTurnSteerResult = typeof ProviderTurnSteerResult.Type;
+
 export const ProviderInterruptTurnInput = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),

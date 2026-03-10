@@ -1,18 +1,31 @@
 import type { ThreadId } from "@t3tools/contracts";
+import { useQuery } from "@tanstack/react-query";
+import { ChevronDownIcon } from "lucide-react";
 import { useCallback } from "react";
 
+import { gitBranchesQueryOptions, gitStatusQueryOptions } from "../lib/gitReactQuery";
 import { newCommandId } from "../lib/utils";
 import { readNativeApi } from "../nativeApi";
 import { useComposerDraftStore } from "../composerDraftStore";
+import { useAppSettings } from "../appSettings";
 import { useStore } from "../store";
 import { useCompactPhoneShell } from "../hooks/useCompactPhoneShell";
 import {
+  listGitRemoteNames,
   EnvMode,
+  resolvePreferredGitRemoteName,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
 } from "./BranchToolbar.logic";
 import { BranchToolbarBranchSelector } from "./BranchToolbarBranchSelector";
 import { Button } from "./ui/button";
+import {
+  Menu,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuTrigger,
+} from "./ui/menu";
 
 interface BranchToolbarProps {
   threadId: ThreadId;
@@ -28,6 +41,7 @@ export default function BranchToolbar({
   onComposerFocusRequest,
 }: BranchToolbarProps) {
   const isCompactPhoneShell = useCompactPhoneShell();
+  const { settings, updateSettings } = useAppSettings();
   const threads = useStore((store) => store.threads);
   const projects = useStore((store) => store.projects);
   const setThreadBranchAction = useStore((store) => store.setThreadBranch);
@@ -46,6 +60,16 @@ export default function BranchToolbar({
     activeWorktreePath,
     hasServerThread,
     draftThreadEnvMode: draftThread?.envMode,
+  });
+  const branchesQuery = useQuery(gitBranchesQueryOptions(branchCwd));
+  const gitStatusQuery = useQuery(gitStatusQueryOptions(branchCwd));
+  const availableRemoteNames = listGitRemoteNames(branchesQuery.data?.branches ?? []);
+  const selectedRemoteName = resolvePreferredGitRemoteName({
+    availableRemoteNames,
+    preferredRemoteName: activeProject
+      ? settings.preferredGitRemotesByProjectCwd[activeProject.cwd]
+      : null,
+    upstreamRemoteName: gitStatusQuery.data?.upstreamRemoteName ?? null,
   });
 
   const setThreadBranch = useCallback(
@@ -128,16 +152,49 @@ export default function BranchToolbar({
         )}
       </div>
 
-      <BranchToolbarBranchSelector
-        activeProjectCwd={activeProject.cwd}
-        activeThreadBranch={activeThreadBranch}
-        activeWorktreePath={activeWorktreePath}
-        branchCwd={branchCwd}
-        effectiveEnvMode={effectiveEnvMode}
-        envLocked={envLocked}
-        onSetThreadBranch={setThreadBranch}
-        {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}
-      />
+      <div className="flex items-center gap-2">
+        {availableRemoteNames.length > 0 && selectedRemoteName ? (
+          <Menu>
+            <MenuTrigger
+              render={<Button variant="ghost" size="xs" />}
+              className="text-muted-foreground/70 hover:text-foreground/80"
+            >
+              <span className="max-w-[120px] truncate">{selectedRemoteName}</span>
+              <ChevronDownIcon className="size-3.5" />
+            </MenuTrigger>
+            <MenuPopup align="end" side="top">
+              <MenuRadioGroup
+                value={selectedRemoteName}
+                onValueChange={(value) => {
+                  updateSettings({
+                    preferredGitRemotesByProjectCwd: {
+                      ...settings.preferredGitRemotesByProjectCwd,
+                      [activeProject.cwd]: value,
+                    },
+                  });
+                }}
+              >
+                {availableRemoteNames.map((remoteName) => (
+                  <MenuRadioItem key={remoteName} value={remoteName}>
+                    {remoteName}
+                  </MenuRadioItem>
+                ))}
+              </MenuRadioGroup>
+            </MenuPopup>
+          </Menu>
+        ) : null}
+
+        <BranchToolbarBranchSelector
+          activeProjectCwd={activeProject.cwd}
+          activeThreadBranch={activeThreadBranch}
+          activeWorktreePath={activeWorktreePath}
+          branchCwd={branchCwd}
+          effectiveEnvMode={effectiveEnvMode}
+          envLocked={envLocked}
+          onSetThreadBranch={setThreadBranch}
+          {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}
+        />
+      </div>
     </div>
   );
 }

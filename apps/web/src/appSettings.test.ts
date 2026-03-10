@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  resolveAppFontScale,
   getAppModelOptions,
   getSlashModelOptions,
   normalizeBackendSelection,
@@ -135,6 +136,15 @@ describe("resolveAppServiceTier", () => {
   it("preserves explicit service tier overrides", () => {
     expect(resolveAppServiceTier("fast")).toBe("fast");
     expect(resolveAppServiceTier("flex")).toBe("flex");
+  });
+});
+
+describe("resolveAppFontScale", () => {
+  it("maps named appearance scales to numeric multipliers", () => {
+    expect(resolveAppFontScale("compact")).toBe(0.92);
+    expect(resolveAppFontScale("default")).toBe(1);
+    expect(resolveAppFontScale("large")).toBe(1.08);
+    expect(resolveAppFontScale("x-large")).toBe(1.16);
   });
 });
 

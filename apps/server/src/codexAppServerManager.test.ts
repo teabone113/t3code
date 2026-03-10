@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ApprovalRequestId, ThreadId } from "@t3tools/contracts";
+import { ApprovalRequestId, ThreadId, TurnId } from "@t3tools/contracts";
 
 import {
   buildCodexInitializeParams,
@@ -29,6 +29,7 @@ function createSendTurnHarness() {
       runtimeMode: "full-access",
       model: "gpt-5.3-codex",
       resumeCursor: { threadId: "thread_1" },
+      activeTurnId: undefined as string | undefined,
       createdAt: "2026-02-10T00:00:00.000Z",
       updatedAt: "2026-02-10T00:00:00.000Z",
     },
@@ -389,6 +390,54 @@ describe("sendTurn", () => {
         },
       ],
       model: "gpt-5.3-codex",
+    });
+  });
+
+  it("steers an active turn through turn/steer", async () => {
+    const { manager, context, sendRequest, updateSession } = createSendTurnHarness();
+    context.session.activeTurnId = "turn_active";
+    sendRequest.mockResolvedValueOnce({
+      turn: {
+        id: "turn_steered",
+      },
+    });
+
+    const result = await manager.steerTurn({
+      threadId: asThreadId("thread_1"),
+      expectedTurnId: TurnId.makeUnsafe("turn_active"),
+      input: "Refine the active work",
+      interactionMode: "plan",
+    });
+
+    expect(result).toEqual({
+      threadId: "thread_1",
+      turnId: "turn_steered",
+      resumeCursor: { threadId: "thread_1" },
+    });
+    expect(sendRequest).toHaveBeenCalledWith(context, "turn/steer", {
+      threadId: "thread_1",
+      expectedTurnId: "turn_active",
+      input: [
+        {
+          type: "text",
+          text: "Refine the active work",
+          text_elements: [],
+        },
+      ],
+      model: "gpt-5.3-codex",
+      collaborationMode: {
+        mode: "plan",
+        settings: {
+          model: "gpt-5.3-codex",
+          reasoning_effort: "medium",
+          developer_instructions: CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+        },
+      },
+    });
+    expect(updateSession).toHaveBeenCalledWith(context, {
+      status: "running",
+      activeTurnId: "turn_steered",
+      resumeCursor: { threadId: "thread_1" },
     });
   });
 

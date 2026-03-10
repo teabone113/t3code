@@ -3,10 +3,14 @@ import { Option, Schema } from "effect";
 import {
   BackendSelection,
   DiscoveredBackend,
+  FolderOpenTargetId,
   MAX_REMOTE_BACKEND_PROFILES,
   RemoteBackendProfile,
+  EditorId,
   type BackendSelection as BackendSelectionValue,
   type DiscoveredBackend as DiscoveredBackendValue,
+  type FolderOpenTargetId as FolderOpenTargetIdValue,
+  type EditorId as EditorIdValue,
   type ProviderKind,
   type ProviderServiceTier,
   type RemoteBackendProfile as RemoteBackendProfileValue,
@@ -16,6 +20,33 @@ import { getDefaultModel, getModelOptions, normalizeModelSlug } from "@t3tools/s
 const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 const MAX_CUSTOM_MODEL_COUNT = 32;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
+export const APP_FONT_SCALE_OPTIONS = [
+  {
+    value: "compact",
+    label: "Compact",
+    description: "Tighter sizing for denser layouts.",
+    scale: 0.92,
+  },
+  {
+    value: "default",
+    label: "Default",
+    description: "Balanced sizing for everyday use.",
+    scale: 1,
+  },
+  {
+    value: "large",
+    label: "Large",
+    description: "Slightly larger text for easier scanning.",
+    scale: 1.08,
+  },
+  {
+    value: "x-large",
+    label: "Extra large",
+    description: "Maximum readable size across the app.",
+    scale: 1.16,
+  },
+] as const;
+export type AppFontScale = (typeof APP_FONT_SCALE_OPTIONS)[number]["value"];
 export const APP_SERVICE_TIER_OPTIONS = [
   {
     value: "auto",
@@ -34,6 +65,7 @@ export const APP_SERVICE_TIER_OPTIONS = [
   },
 ] as const;
 export type AppServiceTier = (typeof APP_SERVICE_TIER_OPTIONS)[number]["value"];
+const AppFontScaleSchema = Schema.Literals(["compact", "default", "large", "x-large"]);
 const AppServiceTierSchema = Schema.Literals(["auto", "fast", "flex"]);
 const MODELS_WITH_FAST_SUPPORT = new Set(["gpt-5.4"]);
 const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>> = {
@@ -51,6 +83,15 @@ const AppSettingsSchema = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(false)),
   ),
+  uiFontScale: AppFontScaleSchema.pipe(
+    Schema.withConstructorDefault(() => Option.some("default")),
+  ),
+  contentFontScale: AppFontScaleSchema.pipe(
+    Schema.withConstructorDefault(() => Option.some("default")),
+  ),
+  monoFontScale: AppFontScaleSchema.pipe(
+    Schema.withConstructorDefault(() => Option.some("default")),
+  ),
   codexServiceTier: AppServiceTierSchema.pipe(
     Schema.withConstructorDefault(() => Option.some("auto")),
   ),
@@ -59,6 +100,15 @@ const AppSettingsSchema = Schema.Struct({
   ),
   remoteBackendProfiles: Schema.Array(RemoteBackendProfile).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
+  ),
+  preferredGitRemotesByProjectCwd: Schema.Record(Schema.String, Schema.String).pipe(
+    Schema.withConstructorDefault(() => Option.some({})),
+  ),
+  defaultFileOpenTool: Schema.NullOr(EditorId).pipe(
+    Schema.withConstructorDefault(() => Option.some(null)),
+  ),
+  defaultFolderOpenTool: Schema.NullOr(FolderOpenTargetId).pipe(
+    Schema.withConstructorDefault(() => Option.some(null)),
   ),
   backendSelection: BackendSelection.pipe(
     Schema.withConstructorDefault(() => Option.some(BackendSelection.makeUnsafe({}))),
@@ -73,6 +123,10 @@ export interface AppModelOption {
 
 export function resolveAppServiceTier(serviceTier: AppServiceTier): ProviderServiceTier | null {
   return serviceTier === "auto" ? null : serviceTier;
+}
+
+export function resolveAppFontScale(scale: AppFontScale): number {
+  return APP_FONT_SCALE_OPTIONS.find((option) => option.value === scale)?.scale ?? 1;
 }
 
 export function shouldShowFastTierIcon(
@@ -132,8 +186,53 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
     ...settings,
     customCodexModels: normalizeCustomModelSlugs(settings.customCodexModels, "codex"),
     remoteBackendProfiles,
+    preferredGitRemotesByProjectCwd: normalizePreferredGitRemotesByProjectCwd(
+      settings.preferredGitRemotesByProjectCwd,
+    ),
+    defaultFileOpenTool: normalizeOptionalFileOpenTool(settings.defaultFileOpenTool),
+    defaultFolderOpenTool: normalizeOptionalFolderOpenTool(settings.defaultFolderOpenTool),
     backendSelection,
   };
+}
+
+function normalizePreferredGitRemotesByProjectCwd(
+  input: Record<string, string | null | undefined> | null | undefined,
+): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  if (!input) {
+    return normalized;
+  }
+
+  for (const [cwd, remoteName] of Object.entries(input)) {
+    const normalizedCwd = cwd.trim();
+    const normalizedRemoteName = remoteName?.trim() ?? "";
+    if (!normalizedCwd || !normalizedRemoteName) {
+      continue;
+    }
+    normalized[normalizedCwd] = normalizedRemoteName;
+  }
+
+  return normalized;
+}
+
+function normalizeOptionalFileOpenTool(
+  tool: EditorIdValue | null | undefined,
+): EditorIdValue | null {
+  if (tool == null) {
+    return null;
+  }
+  const decoded = Schema.decodeUnknownOption(EditorId)(tool);
+  return decoded._tag === "Some" ? decoded.value : null;
+}
+
+function normalizeOptionalFolderOpenTool(
+  tool: FolderOpenTargetIdValue | null | undefined,
+): FolderOpenTargetIdValue | null {
+  if (tool == null) {
+    return null;
+  }
+  const decoded = Schema.decodeUnknownOption(FolderOpenTargetId)(tool);
+  return decoded._tag === "Some" ? decoded.value : null;
 }
 
 export function normalizeRemoteBackendProfiles(

@@ -40,11 +40,14 @@ import {
   gitStatusQueryOptions,
   invalidateGitQueries,
 } from "~/lib/gitReactQuery";
-import { preferredTerminalEditor, resolvePathLinkTarget } from "~/terminal-links";
+import { preferredPathOpenInput, resolvePathLinkTarget } from "~/terminal-links";
 import { readNativeApi } from "~/nativeApi";
+import { useAppSettings } from "~/appSettings";
+import { listGitRemoteNames, resolvePreferredGitRemoteName } from "./BranchToolbar.logic";
 
 interface GitActionsControlProps {
   gitCwd: string | null;
+  projectCwd: string | null;
   activeThreadId: ThreadId | null;
 }
 
@@ -138,7 +141,12 @@ function GitQuickActionIcon({ quickAction }: { quickAction: GitQuickAction }) {
   return <InfoIcon className={iconClassName} />;
 }
 
-export default function GitActionsControl({ gitCwd, activeThreadId }: GitActionsControlProps) {
+export default function GitActionsControl({
+  gitCwd,
+  projectCwd,
+  activeThreadId,
+}: GitActionsControlProps) {
+  const { settings } = useAppSettings();
   const threadToastData = useMemo(
     () => (activeThreadId ? { threadId: activeThreadId } : undefined),
     [activeThreadId],
@@ -152,6 +160,18 @@ export default function GitActionsControl({ gitCwd, activeThreadId }: GitActions
   const { data: gitStatus = null, error: gitStatusError } = useQuery(gitStatusQueryOptions(gitCwd));
 
   const { data: branchList = null } = useQuery(gitBranchesQueryOptions(gitCwd));
+  const availableRemoteNames = useMemo(
+    () => listGitRemoteNames(branchList?.branches ?? []),
+    [branchList?.branches],
+  );
+  const preferredRemoteName = projectCwd
+    ? settings.preferredGitRemotesByProjectCwd[projectCwd] ?? null
+    : null;
+  const selectedRemoteName = resolvePreferredGitRemoteName({
+    availableRemoteNames,
+    preferredRemoteName,
+    upstreamRemoteName: gitStatus?.upstreamRemoteName ?? null,
+  });
   // Default to true while loading so we don't flash init controls.
   const isRepo = branchList?.isRepo ?? true;
   const currentBranch = branchList?.branches.find((branch) => branch.current)?.name ?? null;
@@ -278,7 +298,10 @@ export default function GitActionsControl({ gitCwd, activeThreadId }: GitActions
       }
       onConfirmed?.();
 
-      const pushTarget = !featureBranch && actionBranch ? `origin/${actionBranch}` : undefined;
+      const pushTarget =
+        !featureBranch && actionBranch && selectedRemoteName
+          ? `${selectedRemoteName}/${actionBranch}`
+          : undefined;
       const progressStages = buildGitActionProgressStages({
         action,
         hasCustomCommitMessage: !!commitMessage?.trim(),
@@ -324,6 +347,7 @@ export default function GitActionsControl({ gitCwd, activeThreadId }: GitActions
         action,
         ...(commitMessage ? { commitMessage } : {}),
         ...(featureBranch ? { featureBranch } : {}),
+        ...(selectedRemoteName ? { remoteName: selectedRemoteName } : {}),
       });
 
       try {
@@ -416,6 +440,7 @@ export default function GitActionsControl({ gitCwd, activeThreadId }: GitActions
     [
       isDefaultBranch,
       runImmediateGitActionMutation,
+      selectedRemoteName,
       setPendingDefaultBranchAction,
       threadToastData,
       gitStatusForActions,
@@ -565,7 +590,7 @@ export default function GitActionsControl({ gitCwd, activeThreadId }: GitActions
         return;
       }
       const target = resolvePathLinkTarget(filePath, gitCwd);
-      void api.shell.openInEditor(target, preferredTerminalEditor()).catch((error) => {
+      void api.shell.openPathWithPreferences(preferredPathOpenInput(target)).catch((error) => {
         toastManager.add({
           type: "error",
           title: "Unable to open file",

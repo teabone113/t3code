@@ -17,9 +17,11 @@ import {
   ProviderRespondToUserInputInput,
   ProviderSendTurnInput,
   ProviderSessionStartInput,
+  ProviderSteerTurnInput,
   ProviderStopSessionInput,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  type ProviderTurnSteerResult,
 } from "@t3tools/contracts";
 import { Effect, Layer, Option, PubSub, Queue, Schema, SchemaIssue, Stream } from "effect";
 
@@ -330,6 +332,47 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         return turn;
       });
 
+    const steerTurn: ProviderServiceShape["steerTurn"] = (rawInput) =>
+      Effect.gen(function* () {
+        const input = yield* decodeInputOrValidationError({
+          operation: "ProviderService.steerTurn",
+          schema: ProviderSteerTurnInput,
+          payload: rawInput,
+        });
+        if (!input.input && (input.attachments?.length ?? 0) === 0) {
+          return yield* toValidationError(
+            "ProviderService.steerTurn",
+            "Either input text or at least one attachment is required",
+          );
+        }
+
+        const routed = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: "ProviderService.steerTurn",
+          allowRecovery: true,
+        });
+
+        const turn = (yield* routed.adapter.steerTurn(input)) as ProviderTurnSteerResult;
+        yield* directory.upsert({
+          threadId: routed.threadId,
+          provider: routed.adapter.provider,
+          status: "running",
+          runtimePayload: {
+            activeTurnId: turn.turnId,
+            lastRuntimeEvent: "provider.steerTurn",
+            lastRuntimeEventAt: new Date().toISOString(),
+          },
+        });
+        yield* analytics.record("provider.turn.steered", {
+          provider: routed.adapter.provider,
+          model: input.model,
+          interactionMode: input.interactionMode,
+          attachmentCount: input.attachments?.length ?? 0,
+          hasInput: typeof input.input === "string" && input.input.trim().length > 0,
+        });
+        return turn;
+      });
+
     const interruptTurn: ProviderServiceShape["interruptTurn"] = (rawInput) =>
       Effect.gen(function* () {
         const input = yield* decodeInputOrValidationError({
@@ -510,6 +553,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     return {
       startSession,
       sendTurn,
+      steerTurn,
       interruptTurn,
       respondToRequest,
       respondToUserInput,

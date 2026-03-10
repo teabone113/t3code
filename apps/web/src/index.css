@@ -64,6 +64,16 @@
 :root {
   color-scheme: light;
   --app-shell-height: 100dvh;
+  --app-font-scale-ui: 1;
+  --app-font-scale-content: 1;
+  --app-font-scale-mono: 1;
+  --app-font-size-xs: 0.75rem;
+  --app-font-size-sm: 0.875rem;
+  --app-font-size-base: 1rem;
+  --app-font-size-lg: 1.125rem;
+  --app-font-size-xl: 1.25rem;
+  --app-font-size-2xl: 1.5rem;
+  --app-font-size-3xl: 1.875rem;
   --safe-area-top: env(safe-area-inset-top, 0px);
   --safe-area-right: env(safe-area-inset-right, 0px);
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
@@ -171,6 +181,36 @@ body::after {
 .app-shell-frame {
   height: var(--app-shell-height);
   min-height: var(--app-shell-height);
+}
+
+.app-font-context-ui {
+  --text-xs: calc(var(--app-font-size-xs) * var(--app-font-scale-ui));
+  --text-sm: calc(var(--app-font-size-sm) * var(--app-font-scale-ui));
+  --text-base: calc(var(--app-font-size-base) * var(--app-font-scale-ui));
+  --text-lg: calc(var(--app-font-size-lg) * var(--app-font-scale-ui));
+  --text-xl: calc(var(--app-font-size-xl) * var(--app-font-scale-ui));
+  --text-2xl: calc(var(--app-font-size-2xl) * var(--app-font-scale-ui));
+  --text-3xl: calc(var(--app-font-size-3xl) * var(--app-font-scale-ui));
+}
+
+.app-font-context-content {
+  --text-xs: calc(var(--app-font-size-xs) * var(--app-font-scale-content));
+  --text-sm: calc(var(--app-font-size-sm) * var(--app-font-scale-content));
+  --text-base: calc(var(--app-font-size-base) * var(--app-font-scale-content));
+  --text-lg: calc(var(--app-font-size-lg) * var(--app-font-scale-content));
+  --text-xl: calc(var(--app-font-size-xl) * var(--app-font-scale-content));
+  --text-2xl: calc(var(--app-font-size-2xl) * var(--app-font-scale-content));
+  --text-3xl: calc(var(--app-font-size-3xl) * var(--app-font-scale-content));
+}
+
+.app-font-context-mono {
+  --text-xs: calc(var(--app-font-size-xs) * var(--app-font-scale-mono));
+  --text-sm: calc(var(--app-font-size-sm) * var(--app-font-scale-mono));
+  --text-base: calc(var(--app-font-size-base) * var(--app-font-scale-mono));
+  --text-lg: calc(var(--app-font-size-lg) * var(--app-font-scale-mono));
+  --text-xl: calc(var(--app-font-size-xl) * var(--app-font-scale-mono));
+  --text-2xl: calc(var(--app-font-size-2xl) * var(--app-font-scale-mono));
+  --text-3xl: calc(var(--app-font-size-3xl) * var(--app-font-scale-mono));
 }
 
 pre,

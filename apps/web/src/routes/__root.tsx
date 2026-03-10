@@ -17,11 +17,12 @@ import { readNativeApi } from "../nativeApi";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useStore } from "../store";
 import { useTerminalStateStore } from "../terminalStateStore";
-import { preferredTerminalEditor } from "../terminal-links";
+import { preferredPathOpenInput } from "../terminal-links";
 import { terminalRunningSubprocessFromEvent } from "../terminalActivity";
 import { onServerConfigUpdated, onServerWelcome } from "../wsNativeApi";
 import { providerQueryKeys } from "../lib/providerReactQuery";
 import { collectActiveTerminalThreadIds } from "../lib/terminalStateCleanup";
+import { resolveAppFontScale, useAppSettings } from "../appSettings";
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
@@ -34,6 +35,21 @@ export const Route = createRootRouteWithContext<{
 });
 
 function RootRouteView() {
+  const { settings } = useAppSettings();
+
+  useEffect(() => {
+    const rootStyle = document.documentElement.style;
+    rootStyle.setProperty("--app-font-scale-ui", String(resolveAppFontScale(settings.uiFontScale)));
+    rootStyle.setProperty(
+      "--app-font-scale-content",
+      String(resolveAppFontScale(settings.contentFontScale)),
+    );
+    rootStyle.setProperty(
+      "--app-font-scale-mono",
+      String(resolveAppFontScale(settings.monoFontScale)),
+    );
+  }, [settings.contentFontScale, settings.monoFontScale, settings.uiFontScale]);
+
   if (!readNativeApi()) {
     return (
       <div className="flex h-screen flex-col bg-background text-foreground">
@@ -264,7 +280,9 @@ function EventRouter() {
             void queryClient
               .ensureQueryData(serverConfigQueryOptions())
               .then((config) =>
-                api.shell.openInEditor(config.keybindingsConfigPath, preferredTerminalEditor()),
+                api.shell.openPathWithPreferences(
+                  preferredPathOpenInput(config.keybindingsConfigPath),
+                ),
               )
               .catch((error) => {
                 toastManager.add({

@@ -20,6 +20,7 @@ import {
   CodexAppServerManager,
   type CodexAppServerStartSessionInput,
   type CodexAppServerSendTurnInput,
+  type CodexAppServerSteerTurnInput,
 } from "../../codexAppServerManager.ts";
 import { ServerConfig } from "../../config.ts";
 import { CodexAdapter } from "../Services/CodexAdapter.ts";
@@ -51,6 +52,13 @@ class FakeCodexManager extends CodexAppServerManager {
     async (_input: CodexAppServerSendTurnInput): Promise<ProviderTurnStartResult> => ({
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-1"),
+    }),
+  );
+
+  public steerTurnImpl = vi.fn(
+    async (_input: CodexAppServerSteerTurnInput): Promise<ProviderTurnStartResult> => ({
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-2"),
     }),
   );
 
@@ -92,6 +100,10 @@ class FakeCodexManager extends CodexAppServerManager {
 
   override sendTurn(input: CodexAppServerSendTurnInput): Promise<ProviderTurnStartResult> {
     return this.sendTurnImpl(input);
+  }
+
+  override steerTurn(input: CodexAppServerSteerTurnInput): Promise<ProviderTurnStartResult> {
+    return this.steerTurnImpl(input);
   }
 
   override interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void> {
@@ -246,6 +258,38 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       assert.deepStrictEqual(sessionErrorManager.sendTurnImpl.mock.calls[0]?.[0], {
         threadId: asThreadId("sess-missing"),
         input: "hello",
+        model: "gpt-5.3-codex",
+        effort: "high",
+        serviceTier: "fast",
+      });
+    }),
+  );
+
+  it.effect("maps codex model options before steering a turn", () =>
+    Effect.gen(function* () {
+      sessionErrorManager.steerTurnImpl.mockClear();
+      const adapter = yield* CodexAdapter;
+
+      yield* Effect.ignore(
+        adapter.steerTurn({
+          threadId: asThreadId("sess-missing"),
+          expectedTurnId: asTurnId("turn-active"),
+          input: "adjust course",
+          model: "gpt-5.3-codex",
+          modelOptions: {
+            codex: {
+              reasoningEffort: "high",
+              fastMode: true,
+            },
+          },
+          attachments: [],
+        }),
+      );
+
+      assert.deepStrictEqual(sessionErrorManager.steerTurnImpl.mock.calls[0]?.[0], {
+        threadId: asThreadId("sess-missing"),
+        expectedTurnId: asTurnId("turn-active"),
+        input: "adjust course",
         model: "gpt-5.3-codex",
         effort: "high",
         serviceTier: "fast",

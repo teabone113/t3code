@@ -147,6 +147,10 @@ export function createWsNativeApi(): NativeApi {
     shell: {
       openInEditor: (cwd, editor) =>
         transport.request(WS_METHODS.shellOpenInEditor, { cwd, editor }),
+      openInTerminal: (cwd, terminal) =>
+        transport.request(WS_METHODS.shellOpenInTerminal, { cwd, terminal }),
+      openPathWithPreferences: (input) =>
+        transport.request(WS_METHODS.shellOpenPathWithPreferences, input),
       openExternal: async (url) => {
         if (window.desktopBridge) {
           const opened = await window.desktopBridge.openExternal(url);
@@ -191,6 +195,7 @@ export function createWsNativeApi(): NativeApi {
       getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),
       dispatchCommand: (command) =>
         transport.request(ORCHESTRATION_WS_METHODS.dispatchCommand, { command }),
+      steerTurn: (input) => transport.request(ORCHESTRATION_WS_METHODS.steerTurn, input),
       getTurnDiff: (input) => transport.request(ORCHESTRATION_WS_METHODS.getTurnDiff, input),
       getFullThreadDiff: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.getFullThreadDiff, input),

@@ -28,6 +28,19 @@ export interface PersistedComposerImageAttachment {
   dataUrl: string;
 }
 
+export interface QueuedComposerFollowUp {
+  id: string;
+  prompt: string;
+  attachments: PersistedComposerImageAttachment[];
+  provider: ProviderKind | null;
+  model: string | null;
+  runtimeMode: RuntimeMode | null;
+  interactionMode: ProviderInteractionMode | null;
+  effort: CodexReasoningEffort | null;
+  codexFastMode: boolean;
+  createdAt: string;
+}
+
 export interface ComposerImageAttachment extends Omit<ChatImageAttachment, "previewUrl"> {
   previewUrl: string;
   file: File;
@@ -36,6 +49,7 @@ export interface ComposerImageAttachment extends Omit<ChatImageAttachment, "prev
 interface PersistedComposerThreadDraftState {
   prompt: string;
   attachments: PersistedComposerImageAttachment[];
+  queuedFollowUps?: QueuedComposerFollowUp[];
   provider?: ProviderKind | null;
   model?: string | null;
   runtimeMode?: RuntimeMode | null;
@@ -66,6 +80,7 @@ interface ComposerThreadDraftState {
   images: ComposerImageAttachment[];
   nonPersistedImageIds: string[];
   persistedAttachments: PersistedComposerImageAttachment[];
+  queuedFollowUps: QueuedComposerFollowUp[];
   provider: ProviderKind | null;
   model: string | null;
   runtimeMode: RuntimeMode | null;
@@ -131,6 +146,21 @@ interface ComposerDraftStoreState {
   ) => void;
   setEffort: (threadId: ThreadId, effort: CodexReasoningEffort | null | undefined) => void;
   setCodexFastMode: (threadId: ThreadId, enabled: boolean | null | undefined) => void;
+  enqueueQueuedFollowUp: (
+    threadId: ThreadId,
+    queuedFollowUp: Omit<QueuedComposerFollowUp, "createdAt"> & { createdAt?: string },
+  ) => void;
+  updateQueuedFollowUp: (
+    threadId: ThreadId,
+    queuedFollowUpId: string,
+    patch: Partial<Omit<QueuedComposerFollowUp, "id" | "createdAt">>,
+  ) => void;
+  moveQueuedFollowUp: (
+    threadId: ThreadId,
+    queuedFollowUpId: string,
+    targetIndex: number,
+  ) => void;
+  removeQueuedFollowUp: (threadId: ThreadId, queuedFollowUpId: string) => void;
   addImage: (threadId: ThreadId, image: ComposerImageAttachment) => void;
   addImages: (threadId: ThreadId, images: ComposerImageAttachment[]) => void;
   removeImage: (threadId: ThreadId, imageId: string) => void;
@@ -138,6 +168,13 @@ interface ComposerDraftStoreState {
   syncPersistedAttachments: (
     threadId: ThreadId,
     attachments: PersistedComposerImageAttachment[],
+  ) => void;
+  replaceComposerContent: (
+    threadId: ThreadId,
+    content: {
+      prompt: string;
+      attachments: PersistedComposerImageAttachment[];
+    },
   ) => void;
   clearComposerContent: (threadId: ThreadId) => void;
   clearThreadDraft: (threadId: ThreadId) => void;
@@ -152,14 +189,17 @@ const EMPTY_PERSISTED_DRAFT_STORE_STATE: PersistedComposerDraftStoreState = {
 const EMPTY_IMAGES: ComposerImageAttachment[] = [];
 const EMPTY_IDS: string[] = [];
 const EMPTY_PERSISTED_ATTACHMENTS: PersistedComposerImageAttachment[] = [];
+const EMPTY_QUEUED_FOLLOW_UPS: QueuedComposerFollowUp[] = [];
 Object.freeze(EMPTY_IMAGES);
 Object.freeze(EMPTY_IDS);
 Object.freeze(EMPTY_PERSISTED_ATTACHMENTS);
+Object.freeze(EMPTY_QUEUED_FOLLOW_UPS);
 const EMPTY_THREAD_DRAFT = Object.freeze({
   prompt: "",
   images: EMPTY_IMAGES,
   nonPersistedImageIds: EMPTY_IDS,
   persistedAttachments: EMPTY_PERSISTED_ATTACHMENTS,
+  queuedFollowUps: EMPTY_QUEUED_FOLLOW_UPS,
   provider: null,
   model: null,
   runtimeMode: null,
@@ -178,6 +218,7 @@ function createEmptyThreadDraft(): ComposerThreadDraftState {
     images: [],
     nonPersistedImageIds: [],
     persistedAttachments: [],
+    queuedFollowUps: [],
     provider: null,
     model: null,
     runtimeMode: null,
@@ -198,6 +239,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.prompt.length === 0 &&
     draft.images.length === 0 &&
     draft.persistedAttachments.length === 0 &&
+    draft.queuedFollowUps.length === 0 &&
     draft.provider === null &&
     draft.model === null &&
     draft.runtimeMode === null &&
@@ -249,6 +291,60 @@ function normalizePersistedAttachment(value: unknown): PersistedComposerImageAtt
     mimeType,
     sizeBytes,
     dataUrl,
+  };
+}
+
+function normalizeQueuedComposerFollowUp(value: unknown): QueuedComposerFollowUp | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  const id = candidate.id;
+  if (typeof id !== "string" || id.length === 0) {
+    return null;
+  }
+  const prompt = typeof candidate.prompt === "string" ? candidate.prompt : "";
+  const attachments = Array.isArray(candidate.attachments)
+    ? candidate.attachments.flatMap((entry) => {
+        const normalized = normalizePersistedAttachment(entry);
+        return normalized ? [normalized] : [];
+      })
+    : [];
+  if (prompt.length === 0 && attachments.length === 0) {
+    return null;
+  }
+  const provider = normalizeProviderKind(candidate.provider);
+  const model =
+    typeof candidate.model === "string"
+      ? normalizeModelSlug(candidate.model, provider ?? "codex")
+      : null;
+  const runtimeMode =
+    candidate.runtimeMode === "approval-required" || candidate.runtimeMode === "full-access"
+      ? candidate.runtimeMode
+      : null;
+  const interactionMode =
+    candidate.interactionMode === "plan" || candidate.interactionMode === "default"
+      ? candidate.interactionMode
+      : null;
+  const effortCandidate = typeof candidate.effort === "string" ? candidate.effort : null;
+  const effort =
+    effortCandidate && REASONING_EFFORT_VALUES.has(effortCandidate as CodexReasoningEffort)
+      ? (effortCandidate as CodexReasoningEffort)
+      : null;
+  return {
+    id,
+    prompt,
+    attachments,
+    provider,
+    model,
+    runtimeMode,
+    interactionMode,
+    effort,
+    codexFastMode: candidate.codexFastMode === true,
+    createdAt:
+      typeof candidate.createdAt === "string" && candidate.createdAt.length > 0
+        ? candidate.createdAt
+        : new Date().toISOString(),
   };
 }
 
@@ -389,9 +485,16 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
     const codexFastMode =
       draftCandidate.codexFastMode === true ||
       (typeof draftCandidate.serviceTier === "string" && draftCandidate.serviceTier === "fast");
+    const queuedFollowUps = Array.isArray(draftCandidate.queuedFollowUps)
+      ? draftCandidate.queuedFollowUps.flatMap((entry) => {
+          const normalized = normalizeQueuedComposerFollowUp(entry);
+          return normalized ? [normalized] : [];
+        })
+      : [];
     if (
       prompt.length === 0 &&
       attachments.length === 0 &&
+      queuedFollowUps.length === 0 &&
       !provider &&
       !model &&
       !runtimeMode &&
@@ -404,6 +507,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
     nextDraftsByThreadId[threadId as ThreadId] = {
       prompt,
       attachments,
+      ...(queuedFollowUps.length > 0 ? { queuedFollowUps } : {}),
       ...(provider ? { provider } : {}),
       ...(model ? { model } : {}),
       ...(runtimeMode ? { runtimeMode } : {}),
@@ -511,6 +615,7 @@ function toHydratedThreadDraft(
     images: hydrateImagesFromPersisted(persistedDraft.attachments),
     nonPersistedImageIds: [],
     persistedAttachments: persistedDraft.attachments,
+    queuedFollowUps: persistedDraft.queuedFollowUps ?? [],
     provider: persistedDraft.provider ?? null,
     model: persistedDraft.model ?? null,
     runtimeMode: persistedDraft.runtimeMode ?? null,
@@ -947,6 +1052,127 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           return { draftsByThreadId: nextDraftsByThreadId };
         });
       },
+      enqueueQueuedFollowUp: (threadId, queuedFollowUp) => {
+        if (threadId.length === 0 || queuedFollowUp.id.length === 0) {
+          return;
+        }
+        set((state) => {
+          const existing = state.draftsByThreadId[threadId] ?? createEmptyThreadDraft();
+          const nextQueuedFollowUp: QueuedComposerFollowUp = {
+            ...queuedFollowUp,
+            createdAt: queuedFollowUp.createdAt ?? new Date().toISOString(),
+          };
+          if (
+            nextQueuedFollowUp.prompt.length === 0 &&
+            nextQueuedFollowUp.attachments.length === 0
+          ) {
+            return state;
+          }
+          return {
+            draftsByThreadId: {
+              ...state.draftsByThreadId,
+              [threadId]: {
+                ...existing,
+                queuedFollowUps: [...existing.queuedFollowUps, nextQueuedFollowUp],
+              },
+            },
+          };
+        });
+      },
+      updateQueuedFollowUp: (threadId, queuedFollowUpId, patch) => {
+        if (threadId.length === 0 || queuedFollowUpId.length === 0) {
+          return;
+        }
+        set((state) => {
+          const existing = state.draftsByThreadId[threadId];
+          const current = existing?.queuedFollowUps.find((entry) => entry.id === queuedFollowUpId);
+          if (!existing || !current) {
+            return state;
+          }
+          const nextQueuedFollowUp: QueuedComposerFollowUp = {
+            ...current,
+            ...patch,
+            attachments: patch.attachments ?? current.attachments,
+          };
+          const nextDraft: ComposerThreadDraftState = {
+            ...existing,
+            queuedFollowUps:
+              nextQueuedFollowUp.prompt.length === 0 && nextQueuedFollowUp.attachments.length === 0
+                ? existing.queuedFollowUps.filter((entry) => entry.id !== queuedFollowUpId)
+                : existing.queuedFollowUps.map((entry) =>
+                    entry.id === queuedFollowUpId ? nextQueuedFollowUp : entry,
+                  ),
+          };
+          const nextDraftsByThreadId = { ...state.draftsByThreadId };
+          if (shouldRemoveDraft(nextDraft)) {
+            delete nextDraftsByThreadId[threadId];
+          } else {
+            nextDraftsByThreadId[threadId] = nextDraft;
+          }
+          return { draftsByThreadId: nextDraftsByThreadId };
+        });
+      },
+      moveQueuedFollowUp: (threadId, queuedFollowUpId, targetIndex) => {
+        if (threadId.length === 0 || queuedFollowUpId.length === 0) {
+          return;
+        }
+        set((state) => {
+          const existing = state.draftsByThreadId[threadId];
+          if (!existing || existing.queuedFollowUps.length <= 1) {
+            return state;
+          }
+          const currentIndex = existing.queuedFollowUps.findIndex(
+            (entry) => entry.id === queuedFollowUpId,
+          );
+          if (currentIndex < 0) {
+            return state;
+          }
+          const normalizedTargetIndex = Math.max(
+            0,
+            Math.min(existing.queuedFollowUps.length - 1, targetIndex),
+          );
+          if (normalizedTargetIndex === currentIndex) {
+            return state;
+          }
+          const nextQueuedFollowUps = [...existing.queuedFollowUps];
+          const [moved] = nextQueuedFollowUps.splice(currentIndex, 1);
+          if (!moved) {
+            return state;
+          }
+          nextQueuedFollowUps.splice(normalizedTargetIndex, 0, moved);
+          return {
+            draftsByThreadId: {
+              ...state.draftsByThreadId,
+              [threadId]: {
+                ...existing,
+                queuedFollowUps: nextQueuedFollowUps,
+              },
+            },
+          };
+        });
+      },
+      removeQueuedFollowUp: (threadId, queuedFollowUpId) => {
+        if (threadId.length === 0 || queuedFollowUpId.length === 0) {
+          return;
+        }
+        set((state) => {
+          const current = state.draftsByThreadId[threadId];
+          if (!current) {
+            return state;
+          }
+          const nextDraft: ComposerThreadDraftState = {
+            ...current,
+            queuedFollowUps: current.queuedFollowUps.filter((entry) => entry.id !== queuedFollowUpId),
+          };
+          const nextDraftsByThreadId = { ...state.draftsByThreadId };
+          if (shouldRemoveDraft(nextDraft)) {
+            delete nextDraftsByThreadId[threadId];
+          } else {
+            nextDraftsByThreadId[threadId] = nextDraft;
+          }
+          return { draftsByThreadId: nextDraftsByThreadId };
+        });
+      },
       addImage: (threadId, image) => {
         if (threadId.length === 0) {
           return;
@@ -1105,6 +1331,32 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           });
         });
       },
+      replaceComposerContent: (threadId, content) => {
+        if (threadId.length === 0) {
+          return;
+        }
+        set((state) => {
+          const existing = state.draftsByThreadId[threadId] ?? createEmptyThreadDraft();
+          for (const image of existing.images) {
+            revokeObjectPreviewUrl(image.previewUrl);
+          }
+          const hydratedImages = hydrateImagesFromPersisted(content.attachments);
+          const nextDraft: ComposerThreadDraftState = {
+            ...existing,
+            prompt: content.prompt,
+            images: hydratedImages,
+            nonPersistedImageIds: [],
+            persistedAttachments: content.attachments,
+          };
+          const nextDraftsByThreadId = { ...state.draftsByThreadId };
+          if (shouldRemoveDraft(nextDraft)) {
+            delete nextDraftsByThreadId[threadId];
+          } else {
+            nextDraftsByThreadId[threadId] = nextDraft;
+          }
+          return { draftsByThreadId: nextDraftsByThreadId };
+        });
+      },
       clearComposerContent: (threadId) => {
         if (threadId.length === 0) {
           return;
@@ -1179,6 +1431,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           if (
             draft.prompt.length === 0 &&
             draft.persistedAttachments.length === 0 &&
+            draft.queuedFollowUps.length === 0 &&
             draft.provider === null &&
             draft.model === null &&
             draft.runtimeMode === null &&
@@ -1192,6 +1445,9 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             prompt: draft.prompt,
             attachments: draft.persistedAttachments,
           };
+          if (draft.queuedFollowUps.length > 0) {
+            persistedDraft.queuedFollowUps = draft.queuedFollowUps;
+          }
           if (draft.model) {
             persistedDraft.model = draft.model;
           }

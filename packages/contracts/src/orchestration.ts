@@ -18,6 +18,7 @@ import {
 export const ORCHESTRATION_WS_METHODS = {
   getSnapshot: "orchestration.getSnapshot",
   dispatchCommand: "orchestration.dispatchCommand",
+  steerTurn: "orchestration.steerTurn",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   replayEvents: "orchestration.replayEvents",
@@ -1050,6 +1051,28 @@ export type OrchestrationGetSnapshotInput = typeof OrchestrationGetSnapshotInput
 const OrchestrationGetSnapshotResult = OrchestrationReadModel;
 export type OrchestrationGetSnapshotResult = typeof OrchestrationGetSnapshotResult.Type;
 
+export const OrchestrationSteerTurnInput = Schema.Struct({
+  threadId: ThreadId,
+  expectedTurnId: TurnId,
+  message: Schema.Struct({
+    text: Schema.String,
+    attachments: Schema.Array(UploadChatAttachment),
+  }),
+  model: Schema.optional(TrimmedNonEmptyString),
+  serviceTier: Schema.optional(Schema.NullOr(ProviderServiceTier)),
+  modelOptions: Schema.optional(ProviderModelOptions),
+  interactionMode: ProviderInteractionMode.pipe(
+    Schema.withDecodingDefault(() => DEFAULT_PROVIDER_INTERACTION_MODE),
+  ),
+});
+export type OrchestrationSteerTurnInput = typeof OrchestrationSteerTurnInput.Type;
+
+export const OrchestrationSteerTurnResult = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+});
+export type OrchestrationSteerTurnResult = typeof OrchestrationSteerTurnResult.Type;
+
 export const OrchestrationGetTurnDiffInput = TurnCountRange.mapFields(
   Struct.assign({ threadId: ThreadId }),
   { unsafePreserveChecks: true },
@@ -1084,6 +1107,10 @@ export const OrchestrationRpcSchemas = {
   dispatchCommand: {
     input: ClientOrchestrationCommand,
     output: DispatchResult,
+  },
+  steerTurn: {
+    input: OrchestrationSteerTurnInput,
+    output: OrchestrationSteerTurnResult,
   },
   getTurnDiff: {
     input: OrchestrationGetTurnDiffInput,

@@ -14,6 +14,7 @@ import { makeServerProviderLayer, makeServerRuntimeServicesLayer } from "./serve
 import {
   DEFAULT_TERMINAL_ID,
   EDITORS,
+  TERMINAL_APPS,
   EventId,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
@@ -67,6 +68,8 @@ const asTurnId = (value: string): TurnId => TurnId.makeUnsafe(value);
 const defaultOpenService: OpenShape = {
   openBrowser: () => Effect.void,
   openInEditor: () => Effect.void,
+  openInTerminal: () => Effect.void,
+  openPathWithPreferences: () => Effect.void,
 };
 
 const defaultProviderStatuses: ReadonlyArray<ServerProviderStatus> = [
@@ -356,12 +359,23 @@ function compileKeybindings(bindings: KeybindingsConfig): ResolvedKeybindingsCon
 
 const DEFAULT_RESOLVED_KEYBINDINGS = compileKeybindings([...DEFAULT_KEYBINDINGS]);
 const VALID_EDITOR_IDS = new Set(EDITORS.map((editor) => editor.id));
+const VALID_TERMINAL_APP_IDS = new Set(TERMINAL_APPS.map((terminal) => terminal.id));
 
 function expectAvailableEditors(value: unknown): void {
   expect(Array.isArray(value)).toBe(true);
   for (const editorId of value as unknown[]) {
     expect(typeof editorId).toBe("string");
     expect(VALID_EDITOR_IDS.has(editorId as (typeof EDITORS)[number]["id"])).toBe(true);
+  }
+}
+
+function expectAvailableTerminalApps(value: unknown): void {
+  expect(Array.isArray(value)).toBe(true);
+  for (const terminalId of value as unknown[]) {
+    expect(typeof terminalId).toBe("string");
+    expect(
+      VALID_TERMINAL_APP_IDS.has(terminalId as (typeof TERMINAL_APPS)[number]["id"]),
+    ).toBe(true);
   }
 }
 
@@ -757,8 +771,12 @@ describe("WebSocket Server", () => {
       issues: [],
       providers: defaultProviderStatuses,
       availableEditors: expect.any(Array),
+      availableTerminalApps: expect.any(Array),
     });
     expectAvailableEditors((response.result as { availableEditors: unknown }).availableEditors);
+    expectAvailableTerminalApps(
+      (response.result as { availableTerminalApps: unknown }).availableTerminalApps,
+    );
   });
 
   it("bootstraps default keybindings file when missing", async () => {
@@ -783,8 +801,12 @@ describe("WebSocket Server", () => {
       issues: [],
       providers: defaultProviderStatuses,
       availableEditors: expect.any(Array),
+      availableTerminalApps: expect.any(Array),
     });
     expectAvailableEditors((response.result as { availableEditors: unknown }).availableEditors);
+    expectAvailableTerminalApps(
+      (response.result as { availableTerminalApps: unknown }).availableTerminalApps,
+    );
 
     const persistedConfig = JSON.parse(
       fs.readFileSync(keybindingsPath, "utf8"),
@@ -819,8 +841,12 @@ describe("WebSocket Server", () => {
       ],
       providers: defaultProviderStatuses,
       availableEditors: expect.any(Array),
+      availableTerminalApps: expect.any(Array),
     });
     expectAvailableEditors((response.result as { availableEditors: unknown }).availableEditors);
+    expectAvailableTerminalApps(
+      (response.result as { availableTerminalApps: unknown }).availableTerminalApps,
+    );
     expect(fs.readFileSync(keybindingsPath, "utf8")).toBe("{ not-json");
   });
 
@@ -854,6 +880,7 @@ describe("WebSocket Server", () => {
       issues: Array<{ kind: string; index?: number; message: string }>;
       providers: ReadonlyArray<ServerProviderStatus>;
       availableEditors: unknown;
+      availableTerminalApps: unknown;
     };
     expect(result.cwd).toBe("/my/workspace");
     expect(result.keybindingsConfigPath).toBe(keybindingsPath);
@@ -874,6 +901,7 @@ describe("WebSocket Server", () => {
     expect(result.keybindings.some((entry) => entry.command === "terminal.new")).toBe(true);
     expect(result.providers).toEqual(defaultProviderStatuses);
     expectAvailableEditors(result.availableEditors);
+    expectAvailableTerminalApps(result.availableTerminalApps);
   });
 
   it("pushes server.configUpdated issues when keybindings file changes", async () => {
@@ -917,10 +945,24 @@ describe("WebSocket Server", () => {
 
   it("routes shell.openInEditor through the injected open service", async () => {
     const openCalls: Array<{ cwd: string; editor: string }> = [];
+    const terminalCalls: Array<{ cwd: string; terminal: string }> = [];
+    const pathPreferenceCalls: Array<{
+      path: string;
+      fileEditor: string;
+      folderTarget: string;
+    }> = [];
     const openService: OpenShape = {
       openBrowser: () => Effect.void,
       openInEditor: (input) => {
         openCalls.push({ cwd: input.cwd, editor: input.editor });
+        return Effect.void;
+      },
+      openInTerminal: (input) => {
+        terminalCalls.push({ cwd: input.cwd, terminal: input.terminal });
+        return Effect.void;
+      },
+      openPathWithPreferences: (input) => {
+        pathPreferenceCalls.push(input);
         return Effect.void;
       },
     };
@@ -939,6 +981,27 @@ describe("WebSocket Server", () => {
     });
     expect(response.error).toBeUndefined();
     expect(openCalls).toEqual([{ cwd: "/my/workspace", editor: "cursor" }]);
+
+    const terminalResponse = await sendRequest(ws, WS_METHODS.shellOpenInTerminal, {
+      cwd: "/my/workspace",
+      terminal: "warp",
+    });
+    expect(terminalResponse.error).toBeUndefined();
+    expect(terminalCalls).toEqual([{ cwd: "/my/workspace", terminal: "warp" }]);
+
+    const pathResponse = await sendRequest(ws, WS_METHODS.shellOpenPathWithPreferences, {
+      path: "/my/workspace/src/index.ts",
+      fileEditor: "vscode",
+      folderTarget: "warp",
+    });
+    expect(pathResponse.error).toBeUndefined();
+    expect(pathPreferenceCalls).toEqual([
+      {
+        path: "/my/workspace/src/index.ts",
+        fileEditor: "vscode",
+        folderTarget: "warp",
+      },
+    ]);
   });
 
   it("reads keybindings from the configured state directory", async () => {
@@ -974,8 +1037,12 @@ describe("WebSocket Server", () => {
       issues: [],
       providers: defaultProviderStatuses,
       availableEditors: expect.any(Array),
+      availableTerminalApps: expect.any(Array),
     });
     expectAvailableEditors((response.result as { availableEditors: unknown }).availableEditors);
+    expectAvailableTerminalApps(
+      (response.result as { availableTerminalApps: unknown }).availableTerminalApps,
+    );
   });
 
   it("upserts keybinding rules and updates cached server config", async () => {
@@ -1022,9 +1089,13 @@ describe("WebSocket Server", () => {
       issues: [],
       providers: defaultProviderStatuses,
       availableEditors: expect.any(Array),
+      availableTerminalApps: expect.any(Array),
     });
     expectAvailableEditors(
       (configResponse.result as { availableEditors: unknown }).availableEditors,
+    );
+    expectAvailableTerminalApps(
+      (configResponse.result as { availableTerminalApps: unknown }).availableTerminalApps,
     );
   });
 
@@ -1164,6 +1235,11 @@ describe("WebSocket Server", () => {
         Effect.succeed({
           threadId,
           turnId: asTurnId("provider-turn-1"),
+        }),
+      steerTurn: ({ threadId }) =>
+        Effect.succeed({
+          threadId,
+          turnId: asTurnId("provider-turn-steered"),
         }),
       interruptTurn: () => unsupported(),
       respondToRequest: () => unsupported(),
@@ -1417,6 +1493,8 @@ describe("WebSocket Server", () => {
       openBrowser: () => Effect.void,
       openInEditor: () =>
         Effect.sync(() => BigInt(1)).pipe(Effect.map((result) => result as unknown as void)),
+      openInTerminal: () => Effect.void,
+      openPathWithPreferences: () => Effect.void,
     };
 
     try {

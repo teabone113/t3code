@@ -1,7 +1,7 @@
 import type { GitBranch } from "@t3tools/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, PlusIcon } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -30,6 +30,15 @@ import {
   ComboboxPopup,
   ComboboxTrigger,
 } from "./ui/combobox";
+import {
+  Dialog,
+  DialogFooter,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "./ui/dialog";
+import { Input } from "./ui/input";
 import { toastManager } from "./ui/toast";
 
 interface BranchToolbarBranchSelectorProps {
@@ -75,6 +84,8 @@ export function BranchToolbarBranchSelector({
   const queryClient = useQueryClient();
   const [isBranchMenuOpen, setIsBranchMenuOpen] = useState(false);
   const [branchQuery, setBranchQuery] = useState("");
+  const [isCreateBranchDialogOpen, setIsCreateBranchDialogOpen] = useState(false);
+  const [newBranchName, setNewBranchName] = useState("");
 
   const branchesQuery = useQuery(gitBranchesQueryOptions(branchCwd));
   const branches = useMemo(
@@ -95,27 +106,15 @@ export function BranchToolbarBranchSelector({
   );
   const trimmedBranchQuery = branchQuery.trim();
   const normalizedBranchQuery = trimmedBranchQuery.toLowerCase();
-  const canCreateBranch = effectiveEnvMode === "local" && trimmedBranchQuery.length > 0;
-  const hasExactBranchMatch = branchByName.has(trimmedBranchQuery);
-  const createBranchItemValue = canCreateBranch
-    ? `__create_new_branch__:${trimmedBranchQuery}`
-    : null;
-  const branchPickerItems = useMemo(
-    () =>
-      createBranchItemValue && !hasExactBranchMatch
-        ? [...branchNames, createBranchItemValue]
-        : branchNames,
-    [branchNames, createBranchItemValue, hasExactBranchMatch],
-  );
+  const branchPickerItems = branchNames;
   const filteredBranchPickerItems = useMemo(
     () =>
       normalizedBranchQuery.length === 0
         ? branchPickerItems
-        : branchPickerItems.filter((itemValue) => {
-            if (createBranchItemValue && itemValue === createBranchItemValue) return true;
-            return itemValue.toLowerCase().includes(normalizedBranchQuery);
-          }),
-    [branchPickerItems, createBranchItemValue, normalizedBranchQuery],
+        : branchPickerItems.filter((itemValue) =>
+            itemValue.toLowerCase().includes(normalizedBranchQuery),
+          ),
+    [branchPickerItems, normalizedBranchQuery],
   );
   const [resolvedActiveBranch, setOptimisticBranch] = useOptimistic(
     canonicalActiveBranch,
@@ -222,6 +221,15 @@ export function BranchToolbarBranchSelector({
       setBranchQuery("");
     });
   };
+
+  const openCreateBranchDialog = useCallback(
+    (initialName?: string) => {
+      setNewBranchName(initialName?.trim() ?? "");
+      setIsBranchMenuOpen(false);
+      setIsCreateBranchDialogOpen(true);
+    },
+    [setIsBranchMenuOpen],
+  );
 
   useEffect(() => {
     if (
@@ -338,27 +346,6 @@ export function BranchToolbarBranchSelector({
             {virtualBranchRows.map((virtualRow) => {
               const itemValue = filteredBranchPickerItems[virtualRow.index];
               if (!itemValue) return null;
-              if (createBranchItemValue && itemValue === createBranchItemValue) {
-                return (
-                  <ComboboxItem
-                    hideIndicator
-                    key={itemValue}
-                    index={virtualRow.index}
-                    value={itemValue}
-                    style={{
-                      position: "absolute",
-                      top: 0,
-                      left: 0,
-                      width: "100%",
-                      transform: `translateY(${virtualRow.start}px)`,
-                    }}
-                    onClick={() => createBranch(trimmedBranchQuery)}
-                  >
-                    <span className="truncate">Create new branch "{trimmedBranchQuery}"</span>
-                  </ComboboxItem>
-                );
-              }
-
               const branch = branchByName.get(itemValue);
               if (!branch) return null;
 
@@ -402,7 +389,64 @@ export function BranchToolbarBranchSelector({
             })}
           </div>
         </ComboboxList>
+        {effectiveEnvMode === "local" && (
+          <div className="border-t p-1">
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent"
+              onClick={() => openCreateBranchDialog(trimmedBranchQuery)}
+            >
+              <PlusIcon className="size-4 shrink-0" />
+              <span className="truncate">
+                {trimmedBranchQuery.length > 0
+                  ? `Create and checkout new branch "${trimmedBranchQuery}"...`
+                  : "Create and checkout new branch..."}
+              </span>
+            </button>
+          </div>
+        )}
       </ComboboxPopup>
+      <Dialog open={isCreateBranchDialogOpen} onOpenChange={setIsCreateBranchDialogOpen}>
+        <DialogPopup>
+          <DialogPanel>
+            <DialogHeader>
+              <DialogTitle>Create and checkout new branch</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-2">
+              <label htmlFor="new-branch-name" className="block space-y-1">
+                <span className="text-xs font-medium text-foreground">Branch name</span>
+                <Input
+                  id="new-branch-name"
+                  value={newBranchName}
+                  onChange={(event) => setNewBranchName(event.target.value)}
+                  placeholder="codex/my-change"
+                  spellCheck={false}
+                  autoFocus
+                />
+              </label>
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setIsCreateBranchDialogOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                disabled={newBranchName.trim().length === 0 || isBranchActionPending}
+                onClick={() => {
+                  setIsCreateBranchDialogOpen(false);
+                  createBranch(newBranchName);
+                }}
+              >
+                Create branch
+              </Button>
+            </DialogFooter>
+          </DialogPanel>
+        </DialogPopup>
+      </Dialog>
     </Combobox>
   );
 }

@@ -10,7 +10,15 @@ import { spawn } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { extname, join } from "node:path";
 
-import { EDITORS, type EditorId } from "@t3tools/contracts";
+import {
+  EDITORS,
+  TERMINAL_APPS,
+  type EditorId,
+  type OpenInEditorInput,
+  type OpenInTerminalInput,
+  type OpenPathWithPreferencesInput,
+  type TerminalAppId,
+} from "@t3tools/contracts";
 import { ServiceMap, Schema, Effect, Layer } from "effect";
 
 // ==============================
@@ -22,14 +30,21 @@ export class OpenError extends Schema.TaggedErrorClass<OpenError>()("OpenError",
   cause: Schema.optional(Schema.Defect),
 }) {}
 
-export interface OpenInEditorInput {
-  readonly cwd: string;
-  readonly editor: EditorId;
-}
-
-interface EditorLaunch {
+interface OpenLaunch {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
+}
+
+interface EditorDefinition {
+  readonly id: EditorId;
+  readonly label: string;
+  readonly command: string | null;
+}
+
+interface TerminalAppDefinition {
+  readonly id: TerminalAppId;
+  readonly label: string;
+  readonly command: string | null;
 }
 
 interface CommandAvailabilityOptions {
@@ -38,6 +53,20 @@ interface CommandAvailabilityOptions {
 }
 
 const LINE_COLUMN_SUFFIX_PATTERN = /:\d+(?::\d+)?$/;
+const MAC_EDITOR_APP_NAMES: Record<Exclude<EditorId, "file-manager">, ReadonlyArray<string>> = {
+  cursor: ["Cursor"],
+  vscode: ["Visual Studio Code", "Code"],
+  zed: ["Zed"],
+};
+const MAC_TERMINAL_APP_NAMES: Record<TerminalAppId, ReadonlyArray<string>> = {
+  terminal: ["Terminal"],
+  warp: ["Warp"],
+};
+const TERMINAL_APP_ID_SET = new Set<TerminalAppId>(TERMINAL_APPS.map((terminal) => terminal.id));
+
+function stripLineColumnSuffix(target: string): string {
+  return target.replace(LINE_COLUMN_SUFFIX_PATTERN, "");
+}
 
 function shouldUseGotoFlag(editorId: EditorId, target: string): boolean {
   return (editorId === "cursor" || editorId === "vscode") && LINE_COLUMN_SUFFIX_PATTERN.test(target);
@@ -54,12 +83,47 @@ function fileManagerCommandForPlatform(platform: NodeJS.Platform): string {
   }
 }
 
+function isDirectoryPath(target: string): boolean {
+  try {
+    return statSync(stripLineColumnSuffix(target)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 function stripWrappingQuotes(value: string): string {
   return value.replace(/^"+|"+$/g, "");
 }
 
 function resolvePathEnvironmentVariable(env: NodeJS.ProcessEnv): string {
   return env.PATH ?? env.Path ?? env.path ?? "";
+}
+
+function macApplicationDirectories(env: NodeJS.ProcessEnv): ReadonlyArray<string> {
+  const home = env.HOME?.trim();
+  return [
+    ...(home ? [join(home, "Applications")] : []),
+    "/Applications",
+    "/Applications/Setapp",
+  ];
+}
+
+function isMacApplicationInstalled(
+  appNames: ReadonlyArray<string>,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  for (const directory of macApplicationDirectories(env)) {
+    for (const appName of appNames) {
+      try {
+        if (statSync(join(directory, `${appName}.app`)).isDirectory()) {
+          return true;
+        }
+      } catch {
+        continue;
+      }
+    }
+  }
+  return false;
 }
 
 function resolveWindowsPathExtensions(env: NodeJS.ProcessEnv): ReadonlyArray<string> {
@@ -167,8 +231,32 @@ export function resolveAvailableEditors(
 
   for (const editor of EDITORS) {
     const command = editor.command ?? fileManagerCommandForPlatform(platform);
-    if (isCommandAvailable(command, { platform, env })) {
+    const hasCommand = isCommandAvailable(command, { platform, env });
+    const hasMacApp =
+      platform === "darwin" &&
+      editor.id !== "file-manager" &&
+      isMacApplicationInstalled(MAC_EDITOR_APP_NAMES[editor.id], env);
+    if (hasCommand || hasMacApp) {
       available.push(editor.id);
+    }
+  }
+
+  return available;
+}
+
+export function resolveAvailableTerminalApps(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): ReadonlyArray<TerminalAppId> {
+  const available: TerminalAppId[] = [];
+
+  for (const terminal of TERMINAL_APPS) {
+    const hasCommand =
+      terminal.command !== null && isCommandAvailable(terminal.command, { platform, env });
+    const hasMacApp =
+      platform === "darwin" && isMacApplicationInstalled(MAC_TERMINAL_APP_NAMES[terminal.id], env);
+    if (hasCommand || hasMacApp) {
+      available.push(terminal.id);
     }
   }
 
@@ -190,6 +278,18 @@ export interface OpenShape {
    * Launches the editor as a detached process so server startup is not blocked.
    */
   readonly openInEditor: (input: OpenInEditorInput) => Effect.Effect<void, OpenError>;
+
+  /**
+   * Open a workspace path in a selected terminal app.
+   */
+  readonly openInTerminal: (input: OpenInTerminalInput) => Effect.Effect<void, OpenError>;
+
+  /**
+   * Open a path using file-vs-folder preferences.
+   */
+  readonly openPathWithPreferences: (
+    input: OpenPathWithPreferencesInput,
+  ) => Effect.Effect<void, OpenError>;
 }
 
 /**
@@ -204,16 +304,38 @@ export class Open extends ServiceMap.Service<Open, OpenShape>()("t3/open") {}
 export const resolveEditorLaunch = Effect.fnUntraced(function* (
   input: OpenInEditorInput,
   platform: NodeJS.Platform = process.platform,
-): Effect.fn.Return<EditorLaunch, OpenError> {
-  const editorDef = EDITORS.find((editor) => editor.id === input.editor);
+  env: NodeJS.ProcessEnv = process.env,
+): Effect.fn.Return<OpenLaunch, OpenError> {
+  const editorDef = EDITORS.find((editor) => editor.id === input.editor) as EditorDefinition | undefined;
   if (!editorDef) {
     return yield* new OpenError({ message: `Unknown editor: ${input.editor}` });
   }
 
   if (editorDef.command) {
-    return shouldUseGotoFlag(editorDef.id, input.cwd)
-      ? { command: editorDef.command, args: ["--goto", input.cwd] }
-      : { command: editorDef.command, args: [input.cwd] };
+    if (isCommandAvailable(editorDef.command, { platform, env })) {
+      return shouldUseGotoFlag(editorDef.id, input.cwd)
+        ? { command: editorDef.command, args: ["--goto", input.cwd] }
+        : { command: editorDef.command, args: [input.cwd] };
+    }
+
+    if (platform === "darwin" && input.editor !== "file-manager") {
+      const appNames = MAC_EDITOR_APP_NAMES[input.editor];
+      const appName = appNames.find((candidate) => isMacApplicationInstalled([candidate], env));
+      if (appName) {
+        if (shouldUseGotoFlag(editorDef.id, input.cwd)) {
+          return {
+            command: "open",
+            args: ["-a", appName, "--args", "--goto", input.cwd],
+          };
+        }
+        return {
+          command: "open",
+          args: ["-a", appName, stripLineColumnSuffix(input.cwd)],
+        };
+      }
+    }
+
+    return yield* new OpenError({ message: `Editor command not found: ${editorDef.command}` });
   }
 
   if (editorDef.id !== "file-manager") {
@@ -223,7 +345,39 @@ export const resolveEditorLaunch = Effect.fnUntraced(function* (
   return { command: fileManagerCommandForPlatform(platform), args: [input.cwd] };
 });
 
-export const launchDetached = (launch: EditorLaunch) =>
+export const resolveTerminalLaunch = Effect.fnUntraced(function* (
+  input: OpenInTerminalInput,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): Effect.fn.Return<OpenLaunch, OpenError> {
+  const terminalDef = TERMINAL_APPS.find(
+    (terminal) => terminal.id === input.terminal,
+  ) as TerminalAppDefinition | undefined;
+  if (!terminalDef) {
+    return yield* new OpenError({ message: `Unknown terminal app: ${input.terminal}` });
+  }
+
+  if (terminalDef.command && isCommandAvailable(terminalDef.command, { platform, env })) {
+    return { command: terminalDef.command, args: [stripLineColumnSuffix(input.cwd)] };
+  }
+
+  if (platform === "darwin") {
+    const appNames = MAC_TERMINAL_APP_NAMES[input.terminal];
+    const appName = appNames.find((candidate) => isMacApplicationInstalled([candidate], env));
+    if (appName) {
+      return {
+        command: "open",
+        args: ["-a", appName, stripLineColumnSuffix(input.cwd)],
+      };
+    }
+  }
+
+  return yield* new OpenError({
+    message: `Terminal app is not installed or unavailable: ${terminalDef.label}`,
+  });
+});
+
+export const launchDetached = (launch: OpenLaunch) =>
   Effect.gen(function* () {
     if (!isCommandAvailable(launch.command)) {
       return yield* new OpenError({ message: `Editor command not found: ${launch.command}` });
@@ -270,6 +424,35 @@ const make = Effect.gen(function* () {
         catch: (cause) => new OpenError({ message: "Browser auto-open failed", cause }),
       }),
     openInEditor: (input) => Effect.flatMap(resolveEditorLaunch(input), launchDetached),
+    openInTerminal: (input) => Effect.flatMap(resolveTerminalLaunch(input), launchDetached),
+    openPathWithPreferences: (input) => {
+      if (isDirectoryPath(input.path)) {
+        const directoryPath = stripLineColumnSuffix(input.path);
+        return TERMINAL_APP_ID_SET.has(input.folderTarget as TerminalAppId)
+          ? Effect.flatMap(
+              resolveTerminalLaunch({
+                cwd: directoryPath,
+                terminal: input.folderTarget as TerminalAppId,
+              }),
+              launchDetached,
+            )
+          : Effect.flatMap(
+              resolveEditorLaunch({
+                cwd: directoryPath,
+                editor: input.folderTarget as EditorId,
+              }),
+              launchDetached,
+            );
+      }
+
+      return Effect.flatMap(
+        resolveEditorLaunch({
+          cwd: input.path,
+          editor: input.fileEditor,
+        }),
+        launchDetached,
+      );
+    },
   } satisfies OpenShape;
 });
 

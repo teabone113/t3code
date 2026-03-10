@@ -117,6 +117,10 @@ export interface CodexAppServerSendTurnInput {
   readonly interactionMode?: ProviderInteractionMode;
 }
 
+export interface CodexAppServerSteerTurnInput extends CodexAppServerSendTurnInput {
+  readonly expectedTurnId: TurnId;
+}
+
 export interface CodexAppServerStartSessionInput {
   readonly threadId: ThreadId;
   readonly provider?: "codex";
@@ -719,25 +723,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
   async sendTurn(input: CodexAppServerSendTurnInput): Promise<ProviderTurnStartResult> {
     const context = this.requireSession(input.threadId);
-
-    const turnInput: Array<
-      { type: "text"; text: string; text_elements: [] } | { type: "image"; url: string }
-    > = [];
-    if (input.input) {
-      turnInput.push({
-        type: "text",
-        text: input.input,
-        text_elements: [],
-      });
-    }
-    for (const attachment of input.attachments ?? []) {
-      if (attachment.type === "image") {
-        turnInput.push({
-          type: "image",
-          url: attachment.url,
-        });
-      }
-    }
+    const turnInput = this.buildTurnInput(input);
     if (turnInput.length === 0) {
       throw new Error("Turn input must include text or attachments.");
     }
@@ -801,6 +787,94 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const turnIdRaw = this.readString(turn, "id");
     if (!turnIdRaw) {
       throw new Error("turn/start response did not include a turn id.");
+    }
+    const turnId = TurnId.makeUnsafe(turnIdRaw);
+
+    this.updateSession(context, {
+      status: "running",
+      activeTurnId: turnId,
+      ...(context.session.resumeCursor !== undefined
+        ? { resumeCursor: context.session.resumeCursor }
+        : {}),
+    });
+
+    return {
+      threadId: context.session.threadId,
+      turnId,
+      ...(context.session.resumeCursor !== undefined
+        ? { resumeCursor: context.session.resumeCursor }
+        : {}),
+    };
+  }
+
+  async steerTurn(input: CodexAppServerSteerTurnInput): Promise<ProviderTurnStartResult> {
+    const context = this.requireSession(input.threadId);
+    const turnInput = this.buildTurnInput(input);
+    if (turnInput.length === 0) {
+      throw new Error("Turn input must include text or attachments.");
+    }
+
+    const providerThreadId = readResumeThreadId({
+      threadId: context.session.threadId,
+      runtimeMode: context.session.runtimeMode,
+      resumeCursor: context.session.resumeCursor,
+    });
+    if (!providerThreadId) {
+      throw new Error("Session is missing provider resume thread id.");
+    }
+    const turnSteerParams: {
+      threadId: string;
+      expectedTurnId: string;
+      input: Array<
+        { type: "text"; text: string; text_elements: [] } | { type: "image"; url: string }
+      >;
+      model?: string;
+      serviceTier?: string | null;
+      effort?: string;
+      collaborationMode?: {
+        mode: "code" | "plan";
+        settings: {
+          model: string;
+          reasoning_effort: string;
+          developer_instructions: string;
+        };
+      };
+    } = {
+      threadId: providerThreadId,
+      expectedTurnId: input.expectedTurnId,
+      input: turnInput,
+    };
+    const normalizedModel = resolveCodexModelForAccount(
+      normalizeCodexModelSlug(input.model ?? context.session.model),
+      context.account,
+    );
+    if (normalizedModel) {
+      turnSteerParams.model = normalizedModel;
+    }
+    if (input.serviceTier !== undefined) {
+      turnSteerParams.serviceTier = input.serviceTier;
+    }
+    if (input.effort) {
+      turnSteerParams.effort = input.effort;
+    }
+    const collaborationMode = buildCodexCollaborationMode({
+      ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      ...(normalizedModel !== undefined ? { model: normalizedModel } : {}),
+      ...(input.effort !== undefined ? { effort: input.effort } : {}),
+    });
+    if (collaborationMode) {
+      if (!turnSteerParams.model) {
+        turnSteerParams.model = collaborationMode.settings.model;
+      }
+      turnSteerParams.collaborationMode = collaborationMode;
+    }
+
+    const response = await this.sendRequest(context, "turn/steer", turnSteerParams);
+
+    const turn = this.readObject(this.readObject(response), "turn");
+    const turnIdRaw = this.readString(turn, "id");
+    if (!turnIdRaw) {
+      throw new Error("turn/steer response did not include a turn id.");
     }
     const turnId = TurnId.makeUnsafe(turnIdRaw);
 
@@ -1002,6 +1076,30 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     for (const threadId of this.sessions.keys()) {
       this.stopSession(threadId);
     }
+  }
+
+  private buildTurnInput(
+    input: Pick<CodexAppServerSendTurnInput, "input" | "attachments">,
+  ): Array<{ type: "text"; text: string; text_elements: [] } | { type: "image"; url: string }> {
+    const turnInput: Array<
+      { type: "text"; text: string; text_elements: [] } | { type: "image"; url: string }
+    > = [];
+    if (input.input) {
+      turnInput.push({
+        type: "text",
+        text: input.input,
+        text_elements: [],
+      });
+    }
+    for (const attachment of input.attachments ?? []) {
+      if (attachment.type === "image") {
+        turnInput.push({
+          type: "image",
+          url: attachment.url,
+        });
+      }
+    }
+    return turnInput;
   }
 
   private requireSession(threadId: ThreadId): CodexSessionContext {

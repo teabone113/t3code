@@ -90,6 +90,10 @@ function toRequestError(threadId: ThreadId, method: string, cause: unknown): Pro
   });
 }
 
+function mapTurnRequestError(method: "turn/start" | "turn/steer", threadId: ThreadId) {
+  return (cause: unknown) => toRequestError(threadId, method, cause);
+}
+
 function asObject(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object") {
     return undefined;
@@ -1337,9 +1341,7 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               }
               const bytes = yield* fileSystem
                 .readFile(attachmentPath)
-                .pipe(
-                  Effect.mapError((cause) => toRequestError(input.threadId, "turn/start", cause)),
-                );
+                .pipe(Effect.mapError(mapTurnRequestError("turn/start", input.threadId)));
               return {
                 type: "image" as const,
                 url: `data:${attachment.mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
@@ -1367,6 +1369,62 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             return manager.sendTurn(managerInput);
           },
           catch: (cause) => toRequestError(input.threadId, "turn/start", cause),
+        }).pipe(
+          Effect.map((result) => ({
+            ...result,
+            threadId: input.threadId,
+          })),
+        );
+      });
+
+    const steerTurn: CodexAdapterShape["steerTurn"] = (input) =>
+      Effect.gen(function* () {
+        const codexAttachments = yield* Effect.forEach(
+          input.attachments ?? [],
+          (attachment) =>
+            Effect.gen(function* () {
+              const attachmentPath = resolveAttachmentPath({
+                stateDir: serverConfig.stateDir,
+                attachment,
+              });
+              if (!attachmentPath) {
+                return yield* toRequestError(
+                  input.threadId,
+                  "turn/steer",
+                  new Error(`Invalid attachment id '${attachment.id}'.`),
+                );
+              }
+              const bytes = yield* fileSystem
+                .readFile(attachmentPath)
+                .pipe(Effect.mapError(mapTurnRequestError("turn/steer", input.threadId)));
+              return {
+                type: "image" as const,
+                url: `data:${attachment.mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
+              };
+            }),
+          { concurrency: 1 },
+        );
+
+        return yield* Effect.tryPromise({
+          try: () => {
+            const managerInput = {
+              threadId: input.threadId,
+              expectedTurnId: input.expectedTurnId,
+              ...(input.input !== undefined ? { input: input.input } : {}),
+              ...(input.model !== undefined ? { model: input.model } : {}),
+              ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
+              ...(input.modelOptions?.codex?.reasoningEffort !== undefined
+                ? { effort: input.modelOptions.codex.reasoningEffort }
+                : {}),
+              ...(input.modelOptions?.codex?.fastMode ? { serviceTier: "fast" } : {}),
+              ...(input.interactionMode !== undefined
+                ? { interactionMode: input.interactionMode }
+                : {}),
+              ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
+            };
+            return manager.steerTurn(managerInput);
+          },
+          catch: (cause) => toRequestError(input.threadId, "turn/steer", cause),
         }).pipe(
           Effect.map((result) => ({
             ...result,
@@ -1497,6 +1555,7 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       },
       startSession,
       sendTurn,
+      steerTurn,
       interruptTurn,
       readThread,
       rollbackThread,

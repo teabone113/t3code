@@ -396,6 +396,17 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
         })
       : missingSessionEffect(provider, threadId);
 
+  const steerTurn: ProviderAdapterShape<ProviderAdapterError>["steerTurn"] = (input) =>
+    sendTurn({
+      threadId: input.threadId,
+      input: input.input,
+      attachments: input.attachments,
+      model: input.model,
+      serviceTier: input.serviceTier,
+      modelOptions: input.modelOptions,
+      interactionMode: input.interactionMode,
+    });
+
   const respondToRequest: ProviderAdapterShape<ProviderAdapterError>["respondToRequest"] = (
     threadId,
     requestId,
@@ -479,6 +490,7 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
     },
     startSession,
     sendTurn,
+    steerTurn,
     interruptTurn,
     respondToRequest,
     respondToUserInput,

@@ -157,6 +157,18 @@ function extractBranchFromRef(ref: string): string {
   return normalized.slice(firstSlash + 1).trim();
 }
 
+function extractRemoteNameFromRef(ref: string | null): string | null {
+  if (!ref) {
+    return null;
+  }
+  const separatorIndex = ref.indexOf("/");
+  if (separatorIndex <= 0) {
+    return null;
+  }
+  const remoteName = ref.slice(0, separatorIndex).trim();
+  return remoteName.length > 0 ? remoteName : null;
+}
+
 function toStatusPr(pr: PullRequestInfo): {
   number: number;
   title: string;
@@ -439,6 +451,7 @@ export const makeGitManager = Effect.gen(function* () {
       hasWorkingTreeChanges: details.hasWorkingTreeChanges,
       workingTree: details.workingTree,
       hasUpstream: details.hasUpstream,
+      upstreamRemoteName: extractRemoteNameFromRef(details.upstreamRef),
       aheadCount: details.aheadCount,
       behindCount: details.behindCount,
       pr,
@@ -517,7 +530,7 @@ export const makeGitManager = Effect.gen(function* () {
       );
 
       const push = wantsPush
-        ? yield* gitCore.pushCurrentBranch(input.cwd, currentBranch)
+        ? yield* gitCore.pushCurrentBranch(input.cwd, currentBranch, input.remoteName)
         : { status: "skipped_not_requested" as const };
 
       const pr = wantsPr

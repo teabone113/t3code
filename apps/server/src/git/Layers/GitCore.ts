@@ -146,6 +146,18 @@ function parseTrackingBranchByUpstreamRef(stdout: string, upstreamRef: string): 
   return null;
 }
 
+function extractRemoteNameFromUpstreamRef(upstreamRef: string | null): string | null {
+  if (!upstreamRef) {
+    return null;
+  }
+  const separatorIndex = upstreamRef.indexOf("/");
+  if (separatorIndex <= 0) {
+    return null;
+  }
+  const remoteName = upstreamRef.slice(0, separatorIndex).trim();
+  return remoteName.length > 0 ? remoteName : null;
+}
+
 function deriveLocalBranchNameFromRemoteRef(branchName: string): string | null {
   const separatorIndex = branchName.indexOf("/");
   if (separatorIndex <= 0 || separatorIndex === branchName.length - 1) {
@@ -403,18 +415,22 @@ const makeGitCore = Effect.gen(function* () {
   const remoteBranchExists = (
     cwd: string,
     branch: string,
+    remoteName = "origin",
   ): Effect.Effect<boolean, GitCommandError> =>
     executeGit(
       "GitCore.remoteBranchExists",
       cwd,
-      ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${branch}`],
+      ["show-ref", "--verify", "--quiet", `refs/remotes/${remoteName}/${branch}`],
       {
         allowNonZeroExit: true,
       },
     ).pipe(Effect.map((result) => result.code === 0));
 
-  const originRemoteExists = (cwd: string): Effect.Effect<boolean, GitCommandError> =>
-    executeGit("GitCore.originRemoteExists", cwd, ["remote", "get-url", "origin"], {
+  const remoteExists = (
+    cwd: string,
+    remoteName = "origin",
+  ): Effect.Effect<boolean, GitCommandError> =>
+    executeGit("GitCore.remoteExists", cwd, ["remote", "get-url", remoteName], {
       allowNonZeroExit: true,
     }).pipe(Effect.map((result) => result.code === 0));
 
@@ -678,7 +694,11 @@ const makeGitCore = Effect.gen(function* () {
       return { commitSha };
     });
 
-  const pushCurrentBranch: GitCoreShape["pushCurrentBranch"] = (cwd, fallbackBranch) =>
+  const pushCurrentBranch: GitCoreShape["pushCurrentBranch"] = (
+    cwd,
+    fallbackBranch,
+    preferredRemoteName,
+  ) =>
     Effect.gen(function* () {
       const details = yield* statusDetails(cwd);
       const branch = details.branch ?? fallbackBranch;
@@ -691,9 +711,14 @@ const makeGitCore = Effect.gen(function* () {
         );
       }
 
+      const selectedRemoteName = preferredRemoteName?.trim() || "origin";
+      const upstreamRemoteName = extractRemoteNameFromUpstreamRef(details.upstreamRef);
+      const shouldPushToSelectedRemote =
+        !details.hasUpstream || upstreamRemoteName !== selectedRemoteName;
+
       const hasNoLocalDelta = details.aheadCount === 0 && details.behindCount === 0;
       if (hasNoLocalDelta) {
-        if (details.hasUpstream) {
+        if (details.hasUpstream && !shouldPushToSelectedRemote) {
           return {
             status: "skipped_up_to_date" as const,
             branch,
@@ -705,17 +730,17 @@ const makeGitCore = Effect.gen(function* () {
           Effect.catch(() => Effect.succeed(null)),
         );
         if (comparableBaseBranch) {
-          const hasOriginRemote = yield* originRemoteExists(cwd).pipe(
+          const hasSelectedRemote = yield* remoteExists(cwd, selectedRemoteName).pipe(
             Effect.catch(() => Effect.succeed(false)),
           );
-          if (!hasOriginRemote) {
+          if (!hasSelectedRemote) {
             return {
               status: "skipped_up_to_date" as const,
               branch,
             };
           }
 
-          const hasRemoteBranch = yield* remoteBranchExists(cwd, branch).pipe(
+          const hasRemoteBranch = yield* remoteBranchExists(cwd, branch, selectedRemoteName).pipe(
             Effect.catch(() => Effect.succeed(false)),
           );
           if (hasRemoteBranch) {
@@ -727,17 +752,17 @@ const makeGitCore = Effect.gen(function* () {
         }
       }
 
-      if (!details.hasUpstream) {
+      if (shouldPushToSelectedRemote) {
         yield* runGit("GitCore.pushCurrentBranch.pushWithUpstream", cwd, [
           "push",
           "-u",
-          "origin",
+          selectedRemoteName,
           branch,
         ]);
         return {
           status: "pushed" as const,
           branch,
-          upstreamBranch: `origin/${branch}`,
+          upstreamBranch: `${selectedRemoteName}/${branch}`,
           setUpstream: true,
         };
       }

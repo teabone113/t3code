@@ -61,7 +61,7 @@ import { ProviderService } from "./provider/Services/ProviderService";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { clamp } from "effect/Number";
-import { Open, resolveAvailableEditors } from "./open";
+import { Open, resolveAvailableEditors, resolveAvailableTerminalApps } from "./open";
 import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
 import { tryHandleProjectFaviconRequest } from "./projectFaviconRoute";
@@ -254,6 +254,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     autoBootstrapProjectFromCwd,
   } = serverConfig;
   const availableEditors = resolveAvailableEditors();
+  const availableTerminalApps = resolveAvailableTerminalApps();
 
   const gitManager = yield* GitManager;
   const terminalManager = yield* TerminalManager;
@@ -308,51 +309,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     });
   });
 
-  const normalizeDispatchCommand = Effect.fnUntraced(function* (input: {
-    readonly command: ClientOrchestrationCommand;
-  }) {
-    const normalizeProjectWorkspaceRoot = Effect.fnUntraced(function* (workspaceRoot: string) {
-      const normalizedWorkspaceRoot = path.resolve(yield* expandHomePath(workspaceRoot.trim()));
-      const workspaceStat = yield* fileSystem
-        .stat(normalizedWorkspaceRoot)
-        .pipe(Effect.catch(() => Effect.succeed(null)));
-      if (!workspaceStat) {
-        return yield* new RouteRequestError({
-          message: `Project directory does not exist: ${normalizedWorkspaceRoot}`,
-        });
-      }
-      if (workspaceStat.type !== "Directory") {
-        return yield* new RouteRequestError({
-          message: `Project path is not a directory: ${normalizedWorkspaceRoot}`,
-        });
-      }
-      return normalizedWorkspaceRoot;
-    });
-
-    if (input.command.type === "project.create") {
-      return {
-        ...input.command,
-        workspaceRoot: yield* normalizeProjectWorkspaceRoot(input.command.workspaceRoot),
-      } satisfies OrchestrationCommand;
-    }
-
-    if (
-      input.command.type === "project.meta.update" &&
-      input.command.workspaceRoot !== undefined
-    ) {
-      return {
-        ...input.command,
-        workspaceRoot: yield* normalizeProjectWorkspaceRoot(input.command.workspaceRoot),
-      } satisfies OrchestrationCommand;
-    }
-
-    if (input.command.type !== "thread.turn.start") {
-      return input.command as OrchestrationCommand;
-    }
-    const turnStartCommand = input.command;
-
-    const normalizedAttachments = yield* Effect.forEach(
-      turnStartCommand.message.attachments,
+  const normalizeUploadedAttachments = (
+    threadId: ThreadId,
+    attachments: ReadonlyArray<{
+      readonly type: "image";
+      readonly name: string;
+      readonly mimeType: string;
+      readonly sizeBytes: number;
+      readonly dataUrl: string;
+    }>,
+  ) =>
+    Effect.forEach(
+      attachments,
       (attachment) =>
         Effect.gen(function* () {
           const parsed = parseBase64DataUrl(attachment.dataUrl);
@@ -369,7 +337,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             });
           }
 
-          const attachmentId = createAttachmentId(turnStartCommand.threadId);
+          const attachmentId = createAttachmentId(threadId);
           if (!attachmentId) {
             return yield* new RouteRequestError({
               message: "Failed to create a safe attachment id.",
@@ -414,6 +382,53 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           return persistedAttachment;
         }),
       { concurrency: 1 },
+    );
+
+  const normalizeDispatchCommand = Effect.fnUntraced(function* (input: {
+    readonly command: ClientOrchestrationCommand;
+  }) {
+    const normalizeProjectWorkspaceRoot = Effect.fnUntraced(function* (workspaceRoot: string) {
+      const normalizedWorkspaceRoot = path.resolve(yield* expandHomePath(workspaceRoot.trim()));
+      const workspaceStat = yield* fileSystem
+        .stat(normalizedWorkspaceRoot)
+        .pipe(Effect.catch(() => Effect.succeed(null)));
+      if (!workspaceStat) {
+        return yield* new RouteRequestError({
+          message: `Project directory does not exist: ${normalizedWorkspaceRoot}`,
+        });
+      }
+      if (workspaceStat.type !== "Directory") {
+        return yield* new RouteRequestError({
+          message: `Project path is not a directory: ${normalizedWorkspaceRoot}`,
+        });
+      }
+      return normalizedWorkspaceRoot;
+    });
+
+    if (input.command.type === "project.create") {
+      return {
+        ...input.command,
+        workspaceRoot: yield* normalizeProjectWorkspaceRoot(input.command.workspaceRoot),
+      } satisfies OrchestrationCommand;
+    }
+
+    if (
+      input.command.type === "project.meta.update" &&
+      input.command.workspaceRoot !== undefined
+    ) {
+      return {
+        ...input.command,
+        workspaceRoot: yield* normalizeProjectWorkspaceRoot(input.command.workspaceRoot),
+      } satisfies OrchestrationCommand;
+    }
+
+    if (input.command.type !== "thread.turn.start") {
+      return input.command as OrchestrationCommand;
+    }
+    const turnStartCommand = input.command;
+    const normalizedAttachments = yield* normalizeUploadedAttachments(
+      turnStartCommand.threadId,
+      turnStartCommand.message.attachments,
     );
 
     return {
@@ -617,7 +632,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const projectionReadModelQuery = yield* ProjectionSnapshotQuery;
   const checkpointDiffQuery = yield* CheckpointDiffQuery;
   const orchestrationReactor = yield* OrchestrationReactor;
-  const { openInEditor } = yield* Open;
+  const providerService = yield* ProviderService;
+  const { openInEditor, openInTerminal, openPathWithPreferences } = yield* Open;
 
   const subscriptionsScope = yield* Scope.make("sequential");
   yield* Effect.addFinalizer(() => Scope.close(subscriptionsScope, Exit.void));
@@ -757,6 +773,27 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* orchestrationEngine.dispatch(normalizedCommand);
       }
 
+      case ORCHESTRATION_WS_METHODS.steerTurn: {
+        const normalizedAttachments = yield* normalizeUploadedAttachments(
+          request.body.threadId,
+          request.body.message.attachments,
+        );
+        return yield* providerService.steerTurn({
+          threadId: request.body.threadId,
+          expectedTurnId: request.body.expectedTurnId,
+          input: request.body.message.text.trim() || undefined,
+          attachments: normalizedAttachments,
+          ...(request.body.model !== undefined ? { model: request.body.model } : {}),
+          ...(request.body.serviceTier !== undefined
+            ? { serviceTier: request.body.serviceTier }
+            : {}),
+          ...(request.body.modelOptions !== undefined
+            ? { modelOptions: request.body.modelOptions }
+            : {}),
+          interactionMode: request.body.interactionMode,
+        });
+      }
+
       case ORCHESTRATION_WS_METHODS.getTurnDiff: {
         const body = stripRequestTag(request.body);
         return yield* checkpointDiffQuery.getTurnDiff(body);
@@ -819,6 +856,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case WS_METHODS.shellOpenInEditor: {
         const body = stripRequestTag(request.body);
         return yield* openInEditor(body);
+      }
+
+      case WS_METHODS.shellOpenInTerminal: {
+        const body = stripRequestTag(request.body);
+        return yield* openInTerminal(body);
+      }
+
+      case WS_METHODS.shellOpenPathWithPreferences: {
+        const body = stripRequestTag(request.body);
+        return yield* openPathWithPreferences(body);
       }
 
       case WS_METHODS.gitStatus: {
@@ -905,6 +952,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           issues: keybindingsConfig.issues,
           providers: providerStatuses,
           availableEditors,
+          availableTerminalApps,
         };
 
       case WS_METHODS.serverUpsertKeybinding: {

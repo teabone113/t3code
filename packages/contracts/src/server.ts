@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas";
 import { KeybindingRule, ResolvedKeybindingsConfig } from "./keybindings";
-import { EditorId } from "./editor";
+import { EditorId, TerminalAppId } from "./editor";
 import { ProviderKind } from "./orchestration";
 
 const KeybindingsMalformedConfigIssue = Schema.Struct({
@@ -52,6 +52,7 @@ export const ServerConfig = Schema.Struct({
   issues: ServerConfigIssues,
   providers: ServerProviderStatuses,
   availableEditors: Schema.Array(EditorId),
+  availableTerminalApps: Schema.Array(TerminalAppId),
 });
 export type ServerConfig = typeof ServerConfig.Type;
 

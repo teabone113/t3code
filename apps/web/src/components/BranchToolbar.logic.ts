@@ -88,3 +88,40 @@ export function dedupeRemoteBranchesWithLocalMatches(
     return !localBranchCandidates.some((candidate) => localBranchNames.has(candidate));
   });
 }
+
+export function listGitRemoteNames(branches: ReadonlyArray<GitBranch>): string[] {
+  return [...new Set(branches.flatMap((branch) => (branch.remoteName ? [branch.remoteName] : [])))];
+}
+
+export function resolvePreferredGitRemoteName(input: {
+  availableRemoteNames: ReadonlyArray<string>;
+  preferredRemoteName: string | null | undefined;
+  upstreamRemoteName?: string | null | undefined;
+}): string | null {
+  const { availableRemoteNames, preferredRemoteName, upstreamRemoteName } = input;
+  if (availableRemoteNames.length === 0) {
+    return null;
+  }
+
+  const normalizedPreferredRemoteName = preferredRemoteName?.trim() ?? "";
+  if (
+    normalizedPreferredRemoteName.length > 0 &&
+    availableRemoteNames.includes(normalizedPreferredRemoteName)
+  ) {
+    return normalizedPreferredRemoteName;
+  }
+
+  const normalizedUpstreamRemoteName = upstreamRemoteName?.trim() ?? "";
+  if (
+    normalizedUpstreamRemoteName.length > 0 &&
+    availableRemoteNames.includes(normalizedUpstreamRemoteName)
+  ) {
+    return normalizedUpstreamRemoteName;
+  }
+
+  if (availableRemoteNames.includes("origin")) {
+    return "origin";
+  }
+
+  return availableRemoteNames[0] ?? null;
+}

@@ -7,6 +7,8 @@ import type {
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
+  ProviderSteerTurnInput,
+  ProviderTurnSteerResult,
   ProviderTurnStartResult,
 } from "@t3tools/contracts";
 import {
@@ -109,6 +111,16 @@ function makeFakeCodexAdapter(provider: ProviderKind = "codex") {
       Effect.void,
   );
 
+  const steerTurn = vi.fn(
+    (
+      input: ProviderSteerTurnInput,
+    ): Effect.Effect<ProviderTurnSteerResult, ProviderAdapterError> =>
+      Effect.succeed({
+        threadId: input.threadId,
+        turnId: TurnId.makeUnsafe(`steered-${String(input.threadId)}`),
+      }),
+  );
+
   const respondToRequest = vi.fn(
     (
       _threadId: ThreadId,
@@ -179,6 +191,7 @@ function makeFakeCodexAdapter(provider: ProviderKind = "codex") {
     },
     startSession,
     sendTurn,
+    steerTurn,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
@@ -200,6 +213,7 @@ function makeFakeCodexAdapter(provider: ProviderKind = "codex") {
     emit,
     startSession,
     sendTurn,
+    steerTurn,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
@@ -440,6 +454,23 @@ routing.layer("ProviderServiceLive routing", (it) => {
         attachments: [],
       });
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+
+      yield* provider.steerTurn({
+        threadId: session.threadId,
+        expectedTurnId: asTurnId("turn-thread-1"),
+        input: "refocus",
+        attachments: [],
+      });
+      assert.deepEqual(routing.codex.steerTurn.mock.calls, [
+        [
+          {
+            threadId: session.threadId,
+            expectedTurnId: asTurnId("turn-thread-1"),
+            input: "refocus",
+            attachments: [],
+          },
+        ],
+      ]);
 
       yield* provider.interruptTurn({ threadId: session.threadId });
       assert.deepEqual(routing.codex.interruptTurn.mock.calls, [[session.threadId, undefined]]);

@@ -15,6 +15,7 @@ const fakeCodexAdapter: CodexAdapterShape = {
   capabilities: { sessionModelSwitch: "in-session" },
   startSession: vi.fn(),
   sendTurn: vi.fn(),
+  steerTurn: vi.fn(),
   interruptTurn: vi.fn(),
   respondToRequest: vi.fn(),
   respondToUserInput: vi.fn(),

@@ -8,7 +8,9 @@ import {
   isCommandAvailable,
   launchDetached,
   resolveAvailableEditors,
+  resolveAvailableTerminalApps,
   resolveEditorLaunch,
+  resolveTerminalLaunch,
 } from "./open";
 import { Effect } from "effect";
 import { assertSuccess } from "@effect/vitest/utils";
@@ -42,6 +44,46 @@ describe("resolveEditorLaunch", () => {
         command: "zed",
         args: ["/tmp/workspace"],
       });
+    }),
+  );
+
+  it.effect("falls back to installed mac app bundles when the editor CLI is missing", () =>
+    Effect.gen(function* () {
+      const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-open-home-"));
+      try {
+        fs.mkdirSync(path.join(homeDir, "Applications", "Zed.app"), { recursive: true });
+        const launch = yield* resolveEditorLaunch(
+          { cwd: "/tmp/workspace", editor: "zed" },
+          "darwin",
+          { HOME: homeDir, PATH: "" },
+        );
+        assert.deepEqual(launch, {
+          command: "open",
+          args: ["-a", "Zed", "/tmp/workspace"],
+        });
+      } finally {
+        fs.rmSync(homeDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("passes --goto through open -a for mac app fallback when supported", () =>
+    Effect.gen(function* () {
+      const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-open-home-"));
+      try {
+        fs.mkdirSync(path.join(homeDir, "Applications", "Cursor.app"), { recursive: true });
+        const launch = yield* resolveEditorLaunch(
+          { cwd: "/tmp/workspace/src/open.ts:71:5", editor: "cursor" },
+          "darwin",
+          { HOME: homeDir, PATH: "" },
+        );
+        assert.deepEqual(launch, {
+          command: "open",
+          args: ["-a", "Cursor", "--args", "--goto", "/tmp/workspace/src/open.ts:71:5"],
+        });
+      } finally {
+        fs.rmSync(homeDir, { recursive: true, force: true });
+      }
     }),
   );
 
@@ -113,6 +155,48 @@ describe("resolveEditorLaunch", () => {
         command: "xdg-open",
         args: ["/tmp/workspace"],
       });
+    }),
+  );
+});
+
+describe("resolveTerminalLaunch", () => {
+  it.effect("falls back to installed mac app bundles when terminal CLI is missing", () =>
+    Effect.gen(function* () {
+      const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-open-home-"));
+      try {
+        fs.mkdirSync(path.join(homeDir, "Applications", "Warp.app"), { recursive: true });
+        const launch = yield* resolveTerminalLaunch(
+          { cwd: "/tmp/workspace", terminal: "warp" },
+          "darwin",
+          { HOME: homeDir, PATH: "" },
+        );
+        assert.deepEqual(launch, {
+          command: "open",
+          args: ["-a", "Warp", "/tmp/workspace"],
+        });
+      } finally {
+        fs.rmSync(homeDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("supports mac Terminal without requiring a CLI command", () =>
+    Effect.gen(function* () {
+      const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-open-home-"));
+      try {
+        fs.mkdirSync(path.join(homeDir, "Applications", "Terminal.app"), { recursive: true });
+        const launch = yield* resolveTerminalLaunch(
+          { cwd: "/tmp/workspace", terminal: "terminal" },
+          "darwin",
+          { HOME: homeDir, PATH: "" },
+        );
+        assert.deepEqual(launch, {
+          command: "open",
+          args: ["-a", "Terminal", "/tmp/workspace"],
+        });
+      } finally {
+        fs.rmSync(homeDir, { recursive: true, force: true });
+      }
     }),
   );
 });
@@ -217,6 +301,51 @@ describe("resolveAvailableEditors", () => {
       assert.deepEqual(editors, ["cursor", "file-manager"]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("detects supported mac editors from app bundles without PATH commands", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-editors-home-"));
+    try {
+      fs.mkdirSync(path.join(homeDir, "Applications", "Zed.app"), { recursive: true });
+      const editors = resolveAvailableEditors("darwin", {
+        HOME: homeDir,
+        PATH: "",
+      });
+      assert.deepEqual(editors, ["zed", "file-manager"]);
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resolveAvailableTerminalApps", () => {
+  it("returns only supported terminal apps whose launch commands are available", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-terminals-"));
+    try {
+      fs.writeFileSync(path.join(dir, "warp.CMD"), "@echo off\r\n", "utf8");
+      const terminals = resolveAvailableTerminalApps("win32", {
+        PATH: dir,
+        PATHEXT: ".COM;.EXE;.BAT;.CMD",
+      });
+      assert.deepEqual(terminals, ["warp"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("detects mac terminal apps from Applications without CLI shims", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-terminal-apps-"));
+    try {
+      fs.mkdirSync(path.join(homeDir, "Applications", "Terminal.app"), { recursive: true });
+      fs.mkdirSync(path.join(homeDir, "Applications", "Warp.app"), { recursive: true });
+      const terminals = resolveAvailableTerminalApps("darwin", {
+        HOME: homeDir,
+        PATH: "",
+      });
+      assert.deepEqual(terminals, ["terminal", "warp"]);
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
     }
   });
 });

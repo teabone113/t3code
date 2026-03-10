@@ -53,6 +53,7 @@ export const GitRunStackedActionInput = Schema.Struct({
   action: GitStackedAction,
   commitMessage: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(10_000))),
   featureBranch: Schema.optional(Schema.Boolean),
+  remoteName: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type GitRunStackedActionInput = typeof GitRunStackedActionInput.Type;
 
@@ -119,6 +120,7 @@ export const GitStatusResult = Schema.Struct({
     deletions: NonNegativeInt,
   }),
   hasUpstream: Schema.Boolean,
+  upstreamRemoteName: Schema.optional(TrimmedNonEmptyStringSchema.pipe(Schema.NullOr)),
   aheadCount: NonNegativeInt,
   behindCount: NonNegativeInt,
   pr: Schema.NullOr(GitStatusPr),

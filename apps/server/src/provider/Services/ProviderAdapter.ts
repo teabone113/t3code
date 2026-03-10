@@ -16,7 +16,9 @@ import type {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderSteerTurnInput,
   ThreadId,
+  ProviderTurnSteerResult,
   ProviderTurnStartResult,
   TurnId,
 } from "@t3tools/contracts";
@@ -62,6 +64,13 @@ export interface ProviderAdapterShape<TError> {
   readonly sendTurn: (
     input: ProviderSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, TError>;
+
+  /**
+   * Steer an active provider turn.
+   */
+  readonly steerTurn: (
+    input: ProviderSteerTurnInput,
+  ) => Effect.Effect<ProviderTurnSteerResult, TError>;
 
   /**
    * Interrupt an active turn.

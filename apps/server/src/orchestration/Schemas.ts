@@ -6,6 +6,11 @@ import {
   ThreadMetaUpdatedPayload as ContractsThreadMetaUpdatedPayloadSchema,
   ThreadRuntimeModeSetPayload as ContractsThreadRuntimeModeSetPayloadSchema,
   ThreadInteractionModeSetPayload as ContractsThreadInteractionModeSetPayloadSchema,
+  ThreadMultiAgentConfiguredPayload as ContractsThreadMultiAgentConfiguredPayloadSchema,
+  ThreadSupervisorPlanGenerationRequestedPayload as ContractsThreadSupervisorPlanGenerationRequestedPayloadSchema,
+  ThreadSupervisorPlanApprovedPayload as ContractsThreadSupervisorPlanApprovedPayloadSchema,
+  ThreadSupervisorPlanRejectedPayload as ContractsThreadSupervisorPlanRejectedPayloadSchema,
+  ThreadChildTakenOverPayload as ContractsThreadChildTakenOverPayloadSchema,
   ThreadDeletedPayload as ContractsThreadDeletedPayloadSchema,
   ThreadMessageSentPayload as ContractsThreadMessageSentPayloadSchema,
   ThreadProposedPlanUpsertedPayload as ContractsThreadProposedPlanUpsertedPayloadSchema,
@@ -29,6 +34,14 @@ export const ThreadCreatedPayload = ContractsThreadCreatedPayloadSchema;
 export const ThreadMetaUpdatedPayload = ContractsThreadMetaUpdatedPayloadSchema;
 export const ThreadRuntimeModeSetPayload = ContractsThreadRuntimeModeSetPayloadSchema;
 export const ThreadInteractionModeSetPayload = ContractsThreadInteractionModeSetPayloadSchema;
+export const ThreadMultiAgentConfiguredPayload = ContractsThreadMultiAgentConfiguredPayloadSchema;
+export const ThreadSupervisorPlanGenerationRequestedPayload =
+  ContractsThreadSupervisorPlanGenerationRequestedPayloadSchema;
+export const ThreadSupervisorPlanApprovedPayload =
+  ContractsThreadSupervisorPlanApprovedPayloadSchema;
+export const ThreadSupervisorPlanRejectedPayload =
+  ContractsThreadSupervisorPlanRejectedPayloadSchema;
+export const ThreadChildTakenOverPayload = ContractsThreadChildTakenOverPayloadSchema;
 export const ThreadDeletedPayload = ContractsThreadDeletedPayloadSchema;
 
 export const MessageSentPayloadSchema = ContractsThreadMessageSentPayloadSchema;

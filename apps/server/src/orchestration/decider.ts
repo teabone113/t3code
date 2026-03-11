@@ -159,6 +159,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           model: command.model,
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
+          agentRole: command.agentRole,
+          parentThreadId: command.parentThreadId,
+          supervisorState: command.supervisorState,
           branch: command.branch,
           worktreePath: command.worktreePath,
           createdAt: command.createdAt,
@@ -257,6 +260,116 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           interactionMode: command.interactionMode,
           updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.multi-agent.configure": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const occurredAt = nowIso();
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.multi-agent-configured",
+        payload: {
+          threadId: command.threadId,
+          supervisorState: command.supervisorState,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.supervisor-plan.generate": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.supervisor-plan-generation-requested",
+        payload: {
+          threadId: command.threadId,
+          sourcePlanId: command.sourcePlanId,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.supervisor-plan.approve": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.supervisor-plan-approved",
+        payload: {
+          threadId: command.threadId,
+          planId: command.planId,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.supervisor-plan.reject": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.supervisor-plan-rejected",
+        payload: {
+          threadId: command.threadId,
+          planId: command.planId,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.child.takeover": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.child-taken-over",
+        payload: {
+          threadId: command.threadId,
+          updatedAt: command.createdAt,
         },
       };
     }

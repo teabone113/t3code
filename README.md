@@ -69,6 +69,27 @@ This project is currently Codex-first. The backend starts `codex app-server` and
 
 ## Running
 
+### Task Runner
+
+This repo now includes a root [Task](https://taskfile.dev) file for common development workflows.
+
+```bash
+task
+```
+
+Useful examples:
+
+```bash
+task install
+task dev
+task check
+task backend:headless
+task mobile:open:ios
+task version:get
+task version:set:release VERSION=0.0.6
+task release:desktop:dmg:arm64
+```
+
 ### Desktop App
 
 You can package the macOS desktop app as a DMG:

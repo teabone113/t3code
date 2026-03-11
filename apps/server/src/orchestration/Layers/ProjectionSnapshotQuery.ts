@@ -53,7 +53,11 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
-const ProjectionThreadDbRowSchema = ProjectionThread;
+const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
+  Struct.assign({
+    supervisorState: Schema.NullOr(Schema.fromJsonString(ProjectionThread.fields.supervisorState)),
+  }),
+);
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
   Struct.assign({
     payload: Schema.fromJsonString(Schema.Unknown),
@@ -159,6 +163,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           model,
           runtime_mode AS "runtimeMode",
           interaction_mode AS "interactionMode",
+          agent_role AS "agentRole",
+          parent_thread_id AS "parentThreadId",
+          supervisor_state_json AS "supervisorState",
           branch,
           worktree_path AS "worktreePath",
           latest_turn_id AS "latestTurnId",
@@ -531,6 +538,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             model: row.model,
             runtimeMode: row.runtimeMode,
             interactionMode: row.interactionMode,
+            agentRole: row.agentRole,
+            parentThreadId: row.parentThreadId,
+            supervisorState: row.supervisorState,
             branch: row.branch,
             worktreePath: row.worktreePath,
             latestTurn: latestTurnByThread.get(row.threadId) ?? null,

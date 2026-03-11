@@ -17,7 +17,12 @@ import { ZapIcon } from "lucide-react";
 import {
   APP_FONT_SCALE_OPTIONS,
   APP_SERVICE_TIER_OPTIONS,
+  DEFAULT_SUPERVISOR_MAX_CONCURRENT_CHILDREN,
+  MAX_SUPERVISOR_MAX_CONCURRENT_CHILDREN,
+  MIN_SUPERVISOR_MAX_CONCURRENT_CHILDREN,
+  getAppModelOptions,
   resolveAppFontScale,
+  resolveAppModelSelection,
   type AppSettings,
   normalizeBackendSelection,
   normalizeRemoteBackendProfiles,
@@ -63,6 +68,25 @@ const THEME_OPTIONS = [
   },
 ] as const;
 const AUTO_OPEN_TOOL_VALUE = "__auto__";
+const SUPERVISOR_MODEL_INHERIT_VALUE = "__inherit__";
+const SETTINGS_TABS = [
+  {
+    value: "connection",
+    label: "Connection",
+    description: "Backend discovery and remote shell setup.",
+  },
+  {
+    value: "codex",
+    label: "Codex",
+    description: "Codex runtime, models, and supervisor defaults.",
+  },
+  {
+    value: "interface",
+    label: "Interface",
+    description: "Theme, output, open tools, and safety.",
+  },
+] as const;
+type SettingsTabId = (typeof SETTINGS_TABS)[number]["value"];
 const APPEARANCE_FONT_CONTEXT_OPTIONS: Array<{
   key: "uiFontScale" | "contentFontScale" | "monoFontScale";
   label: string;
@@ -214,6 +238,7 @@ function patchCustomModels(provider: ProviderKind, models: string[]) {
 function SettingsRouteView() {
   const { theme, setTheme, resolvedTheme } = useTheme();
   const { settings, defaults, updateSettings } = useAppSettings();
+  const [activeTab, setActiveTab] = useState<SettingsTabId>("connection");
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const [isOpeningKeybindings, setIsOpeningKeybindings] = useState(false);
   const [openKeybindingsError, setOpenKeybindingsError] = useState<string | null>(null);
@@ -266,6 +291,11 @@ function SettingsRouteView() {
   const activeBackendLabel = resolveBackendSelectionLabel(
     settings.backendSelection,
     remoteBackendProfiles,
+  );
+  const supervisorChildModelOptions = getAppModelOptions(
+    "codex",
+    settings.customCodexModels,
+    settings.defaultSupervisorChildModel,
   );
 
   const openKeybindingsFile = useCallback(() => {
@@ -520,7 +550,29 @@ function SettingsRouteView() {
               </p>
             </header>
 
-            <section className="rounded-2xl border border-border bg-card p-5">
+            <div className="flex flex-wrap gap-2">
+              {SETTINGS_TABS.map((tab) => {
+                const selected = activeTab === tab.value;
+                return (
+                  <button
+                    key={tab.value}
+                    type="button"
+                    className={`rounded-xl border px-3 py-2 text-left transition-colors ${
+                      selected
+                        ? "border-primary/60 bg-primary/8 text-foreground"
+                        : "border-border bg-card text-muted-foreground hover:bg-accent"
+                    }`}
+                    onClick={() => setActiveTab(tab.value)}
+                  >
+                    <div className="text-sm font-medium">{tab.label}</div>
+                    <div className="text-[11px]">{tab.description}</div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {activeTab === "connection" ? (
+              <section className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-4">
                 <h2 className="text-sm font-medium text-foreground">Backend Connection</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -803,9 +855,11 @@ function SettingsRouteView() {
                   </div>
                 </div>
               </div>
-            </section>
+              </section>
+            ) : null}
 
-            <section className="rounded-2xl border border-border bg-card p-5">
+            {activeTab === "interface" ? (
+              <section className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-4">
                 <h2 className="text-sm font-medium text-foreground">Appearance</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -879,9 +933,11 @@ function SettingsRouteView() {
                   </label>
                 ))}
               </div>
-            </section>
+              </section>
+            ) : null}
 
-            <section className="rounded-2xl border border-border bg-card p-5">
+            {activeTab === "codex" ? (
+              <section className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-4">
                 <h2 className="text-sm font-medium text-foreground">Codex App Server</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -937,9 +993,11 @@ function SettingsRouteView() {
                   </Button>
                 </div>
               </div>
-            </section>
+              </section>
+            ) : null}
 
-            <section className="rounded-2xl border border-border bg-card p-5">
+            {activeTab === "codex" ? (
+              <section className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-4">
                 <h2 className="text-sm font-medium text-foreground">Models</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -1113,9 +1171,113 @@ function SettingsRouteView() {
                   );
                 })}
               </div>
-            </section>
+              </section>
+            ) : null}
 
-            <section className="rounded-2xl border border-border bg-card p-5">
+            {activeTab === "codex" ? (
+              <section className="rounded-2xl border border-border bg-card p-5">
+                <div className="mb-4">
+                  <h2 className="text-sm font-medium text-foreground">Supervisor defaults</h2>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    New supervisor threads inherit these defaults for sub-agent model selection and
+                    maximum concurrent child agents.
+                  </p>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <label className="block space-y-1">
+                    <span className="text-xs font-medium text-foreground">
+                      Default sub-agent model
+                    </span>
+                    <Select
+                      value={settings.defaultSupervisorChildModel ?? SUPERVISOR_MODEL_INHERIT_VALUE}
+                      onValueChange={(value) => {
+                        if (!value) return;
+                        updateSettings({
+                          defaultSupervisorChildModel:
+                            value === SUPERVISOR_MODEL_INHERIT_VALUE
+                              ? null
+                              : resolveAppModelSelection(
+                                  "codex",
+                                  settings.customCodexModels,
+                                  value,
+                                ),
+                        });
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectPopup alignItemWithTrigger={false}>
+                        <SelectItem value={SUPERVISOR_MODEL_INHERIT_VALUE}>
+                          Inherit supervisor model
+                        </SelectItem>
+                        {supervisorChildModelOptions.map((option) => (
+                          <SelectItem key={option.slug} value={option.slug}>
+                            {option.name}
+                          </SelectItem>
+                        ))}
+                      </SelectPopup>
+                    </Select>
+                    <span className="text-xs text-muted-foreground">
+                      If unset, child threads follow the supervisor thread&apos;s model.
+                    </span>
+                  </label>
+
+                  <label className="block space-y-1">
+                    <span className="text-xs font-medium text-foreground">
+                      Max concurrent sub-agents
+                    </span>
+                    <Select
+                      value={String(settings.defaultSupervisorMaxConcurrentChildren)}
+                      onValueChange={(value) => {
+                        if (!value) return;
+                        const parsed = Number.parseInt(value, 10);
+                        if (!Number.isFinite(parsed)) return;
+                        updateSettings({
+                          defaultSupervisorMaxConcurrentChildren: Math.min(
+                            MAX_SUPERVISOR_MAX_CONCURRENT_CHILDREN,
+                            Math.max(MIN_SUPERVISOR_MAX_CONCURRENT_CHILDREN, parsed),
+                          ),
+                        });
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectPopup alignItemWithTrigger={false}>
+                        {Array.from(
+                          {
+                            length:
+                              MAX_SUPERVISOR_MAX_CONCURRENT_CHILDREN -
+                              MIN_SUPERVISOR_MAX_CONCURRENT_CHILDREN +
+                              1,
+                          },
+                          (_, index) => {
+                            const value = index + MIN_SUPERVISOR_MAX_CONCURRENT_CHILDREN;
+                            return (
+                              <SelectItem key={value} value={String(value)}>
+                                {value}
+                              </SelectItem>
+                            );
+                          },
+                        )}
+                      </SelectPopup>
+                    </Select>
+                    <span className="text-xs text-muted-foreground">
+                      Default:{" "}
+                      <span className="font-medium text-foreground">
+                        {defaults.defaultSupervisorMaxConcurrentChildren ??
+                          DEFAULT_SUPERVISOR_MAX_CONCURRENT_CHILDREN}
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              </section>
+            ) : null}
+
+            {activeTab === "interface" ? (
+              <section className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-4">
                 <h2 className="text-sm font-medium text-foreground">Responses</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -1156,9 +1318,11 @@ function SettingsRouteView() {
                   </Button>
                 </div>
               ) : null}
-            </section>
+              </section>
+            ) : null}
 
-            <section className="rounded-2xl border border-border bg-card p-5">
+            {activeTab === "interface" ? (
+              <section className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-4">
                 <h2 className="text-sm font-medium text-foreground">Keybindings</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -1192,9 +1356,11 @@ function SettingsRouteView() {
                   <p className="text-xs text-destructive">{openKeybindingsError}</p>
                 ) : null}
               </div>
-            </section>
+              </section>
+            ) : null}
 
-            <section className="rounded-2xl border border-border bg-card p-5">
+            {activeTab === "interface" ? (
+              <section className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-4">
                 <h2 className="text-sm font-medium text-foreground">Open tools</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -1274,9 +1440,11 @@ function SettingsRouteView() {
                   </span>
                 </label>
               </div>
-            </section>
+              </section>
+            ) : null}
 
-            <section className="rounded-2xl border border-border bg-card p-5">
+            {activeTab === "interface" ? (
+              <section className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-4">
                 <h2 className="text-sm font-medium text-foreground">Safety</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -1317,7 +1485,8 @@ function SettingsRouteView() {
                   </Button>
                 </div>
               ) : null}
-            </section>
+              </section>
+            ) : null}
           </div>
         </div>
       </div>

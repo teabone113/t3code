@@ -27,6 +27,14 @@
     "./discovery": {
       "types": "./src/discovery.ts",
       "import": "./src/discovery.ts"
+    },
+    "./versionStage": {
+      "types": "./src/versionStage.ts",
+      "import": "./src/versionStage.ts"
+    },
+    "./supervisor": {
+      "types": "./src/supervisor.ts",
+      "import": "./src/supervisor.ts"
     }
   },
   "scripts": {

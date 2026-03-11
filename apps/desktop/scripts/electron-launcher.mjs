@@ -15,14 +15,18 @@ import {
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { formatStageAppName } from "@t3tools/shared/versionStage";
 
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
-const APP_DISPLAY_NAME = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
 const APP_BUNDLE_ID = "com.t3tools.t3code";
 const LAUNCHER_VERSION = 1;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const desktopDir = resolve(__dirname, "..");
+const desktopPackageJson = JSON.parse(readFileSync(join(desktopDir, "package.json"), "utf8"));
+const APP_DISPLAY_NAME = isDevelopment
+  ? "T3 Code (Dev)"
+  : formatStageAppName("T3 Code", desktopPackageJson.version);
 
 function setPlistString(plistPath, key, value) {
   const replaceResult = spawnSync("plutil", ["-replace", key, "-string", value, plistPath], {

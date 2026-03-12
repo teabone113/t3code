@@ -1,7 +1,9 @@
 import type {
+  AgentRole,
   OrchestrationLatestTurn,
   OrchestrationProposedPlanId,
   OrchestrationSessionStatus,
+  SupervisorThreadState,
   OrchestrationThreadActivity,
   ProjectContextSource,
   ProjectScript as ContractProjectScript,
@@ -93,6 +95,9 @@ export interface Thread {
   model: string;
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
+  agentRole: AgentRole;
+  parentThreadId: ThreadId | null;
+  supervisorState: SupervisorThreadState | null;
   session: ThreadSession | null;
   messages: ChatMessage[];
   proposedPlans: ProposedPlan[];

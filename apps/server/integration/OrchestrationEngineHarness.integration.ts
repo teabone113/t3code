@@ -54,6 +54,7 @@ import {
 } from "../src/orchestration/Services/OrchestrationEngine.ts";
 import { OrchestrationReactor } from "../src/orchestration/Services/OrchestrationReactor.ts";
 import { ProjectionSnapshotQuery } from "../src/orchestration/Services/ProjectionSnapshotQuery.ts";
+import { SupervisorReactorNoop } from "../src/orchestration/Services/SupervisorReactor.ts";
 
 import {
   makeTestProviderAdapterHarness,
@@ -291,6 +292,7 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(runtimeIngestionLayer),
       Layer.provideMerge(providerCommandReactorLayer),
       Layer.provideMerge(checkpointReactorLayer),
+      Layer.provideMerge(SupervisorReactorNoop),
     );
     const layer = orchestrationReactorLayer.pipe(
       Layer.provide(persistenceLayer),

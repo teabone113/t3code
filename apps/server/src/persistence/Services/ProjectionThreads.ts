@@ -7,10 +7,12 @@
  * @module ProjectionThreadRepository
  */
 import {
+  AgentRole,
   IsoDateTime,
   ProjectId,
   ProviderInteractionMode,
   RuntimeMode,
+  SupervisorThreadState,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -26,6 +28,9 @@ export const ProjectionThread = Schema.Struct({
   model: Schema.String,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  agentRole: AgentRole,
+  parentThreadId: Schema.NullOr(ThreadId),
+  supervisorState: Schema.NullOr(SupervisorThreadState),
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
   latestTurnId: Schema.NullOr(TurnId),

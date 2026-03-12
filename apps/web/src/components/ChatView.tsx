@@ -35,6 +35,7 @@ import {
   normalizeModelSlug,
   resolveModelSlugForProvider,
 } from "@t3tools/shared/model";
+import { parseSupervisorPlan } from "@t3tools/shared/supervisor";
 import {
   memo,
   useCallback,
@@ -115,6 +116,7 @@ import {
   DEFAULT_THREAD_TERMINAL_ID,
   MAX_THREAD_TERMINAL_COUNT,
   type ChatMessage,
+  type ProposedPlan,
   type Thread,
   type TurnDiffFileChange,
   type TurnDiffSummary,
@@ -216,6 +218,7 @@ import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
 import {
+  DEFAULT_SUPERVISOR_MAX_CONCURRENT_CHILDREN,
   getJCodeMunchSettings,
   getAppModelOptions,
   resolveAppModelSelection,
@@ -226,6 +229,7 @@ import {
 } from "../appSettings";
 import {
   type ComposerImageAttachment,
+  type ComposerTextAttachment,
   type DraftThreadEnvMode,
   type DraftThreadState,
   type PersistedComposerImageAttachment,
@@ -274,6 +278,8 @@ const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8;
 const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
+const TEXT_ATTACHMENT_MAX_BYTES = 256 * 1024;
+const TEXT_ATTACHMENT_SIZE_LIMIT_LABEL = `${Math.round(TEXT_ATTACHMENT_MAX_BYTES / 1024)}KB`;
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
@@ -289,6 +295,44 @@ const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
 const WORKTREE_BRANCH_PREFIX = "t3code";
+const TEXT_ATTACHMENT_EXTENSION_LANGUAGE: Record<string, string> = {
+  cjs: "javascript",
+  css: "css",
+  csv: "csv",
+  go: "go",
+  html: "html",
+  java: "java",
+  js: "javascript",
+  json: "json",
+  jsx: "jsx",
+  kt: "kotlin",
+  kts: "kotlin",
+  md: "markdown",
+  mjs: "javascript",
+  py: "python",
+  rb: "ruby",
+  rs: "rust",
+  scss: "scss",
+  sh: "bash",
+  swift: "swift",
+  toml: "toml",
+  ts: "typescript",
+  tsx: "tsx",
+  txt: "text",
+  xml: "xml",
+  yaml: "yaml",
+  yml: "yaml",
+  zsh: "bash",
+};
+const TEXT_ATTACHMENT_ACCEPT_MIME_PREFIXES = [
+  "text/",
+  "application/json",
+  "application/xml",
+  "application/yaml",
+  "application/x-yaml",
+  "application/toml",
+  "application/x-sh",
+];
 
 function readLastInvokedScriptByProjectFromStorage(): Record<string, string> {
   const stored = localStorage.getItem(LAST_INVOKED_SCRIPT_BY_PROJECT_KEY);
@@ -366,6 +410,10 @@ function buildLocalDraftThread(
   draftThread: DraftThreadState,
   fallbackModel: string,
   error: string | null,
+  supervisorDefaults: {
+    defaultChildModel: string | null;
+    defaultMaxConcurrentChildren: number;
+  },
 ): Thread {
   return {
     id: threadId,
@@ -375,6 +423,20 @@ function buildLocalDraftThread(
     model: fallbackModel,
     runtimeMode: draftThread.runtimeMode,
     interactionMode: draftThread.interactionMode,
+    agentRole: draftThread.agentRole,
+    parentThreadId: null,
+    supervisorState:
+      draftThread.agentRole === "supervisor"
+        ? {
+            maxConcurrentChildren: supervisorDefaults.defaultMaxConcurrentChildren,
+            childModel: supervisorDefaults.defaultChildModel,
+            lifecycleState: "drafting_plan",
+            activePlanId: null,
+            sourcePlanId: null,
+            structuringError: null,
+            delegations: [],
+          }
+        : null,
     session: null,
     messages: [],
     error,
@@ -518,6 +580,39 @@ function readFileAsDataUrl(file: File): Promise<string> {
     });
     reader.readAsDataURL(file);
   });
+}
+
+function extensionOfFileName(fileName: string): string | null {
+  const trimmed = fileName.trim();
+  const dotIndex = trimmed.lastIndexOf(".");
+  if (dotIndex < 0 || dotIndex === trimmed.length - 1) {
+    return null;
+  }
+  return trimmed.slice(dotIndex + 1).toLowerCase();
+}
+
+function inferTextAttachmentLanguage(file: File): string {
+  const extension = extensionOfFileName(file.name);
+  return (extension && TEXT_ATTACHMENT_EXTENSION_LANGUAGE[extension]) || "text";
+}
+
+function isSupportedTextAttachment(file: File): boolean {
+  if (TEXT_ATTACHMENT_ACCEPT_MIME_PREFIXES.some((prefix) => file.type.startsWith(prefix))) {
+    return true;
+  }
+  const extension = extensionOfFileName(file.name);
+  return extension != null && extension in TEXT_ATTACHMENT_EXTENSION_LANGUAGE;
+}
+
+function buildTextAttachmentPromptBlock(file: File, contents: string): string {
+  const language = inferTextAttachmentLanguage(file);
+  const sanitizedContents = contents.replace(/\r\n/g, "\n").trim();
+  return [
+    `Attached file \`${file.name}\`:`,
+    `\`\`\`\`${language}`,
+    sanitizedContents,
+    "````",
+  ].join("\n");
 }
 
 function buildTemporaryWorktreeBranchName(): string {
@@ -695,6 +790,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const composerDraft = useComposerThreadDraft(threadId);
   const prompt = composerDraft.prompt;
   const composerImages = composerDraft.images;
+  const composerTextAttachments = composerDraft.textAttachments;
   const queuedFollowUps = composerDraft.queuedFollowUps;
   const nonPersistedComposerImageIds = composerDraft.nonPersistedImageIds;
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
@@ -712,6 +808,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const addComposerDraftImage = useComposerDraftStore((store) => store.addImage);
   const addComposerDraftImages = useComposerDraftStore((store) => store.addImages);
   const removeComposerDraftImage = useComposerDraftStore((store) => store.removeImage);
+  const setComposerDraftTextAttachments = useComposerDraftStore((store) => store.setTextAttachments);
   const clearComposerDraftPersistedAttachments = useComposerDraftStore(
     (store) => store.clearPersistedAttachments,
   );
@@ -782,6 +879,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   } | null>(null);
   const pendingInteractionAnchorFrameRef = useRef<number | null>(null);
   const composerEditorRef = useRef<ComposerPromptEditorHandle>(null);
+  const composerFileInputRef = useRef<HTMLInputElement>(null);
   const composerFormRef = useRef<HTMLFormElement>(null);
   const composerFormHeightRef = useRef(0);
   const composerImagesRef = useRef<ComposerImageAttachment[]>([]);
@@ -817,6 +915,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
     },
     [setComposerDraftPrompt, threadId],
   );
+  const setComposerPromptValue = useCallback(
+    (nextPrompt: string, nextCursor = nextPrompt.length) => {
+      promptRef.current = nextPrompt;
+      setPrompt(nextPrompt);
+      setComposerCursor(nextCursor);
+      setComposerTrigger(detectComposerTrigger(nextPrompt, nextCursor));
+      setComposerHighlightedItemId(null);
+    },
+    [setPrompt],
+  );
   const addComposerImage = useCallback(
     (image: ComposerImageAttachment) => {
       addComposerDraftImage(threadId, image);
@@ -847,9 +955,22 @@ export default function ChatView({ threadId }: ChatViewProps) {
             draftThread,
             fallbackDraftProject?.model ?? DEFAULT_MODEL_BY_PROVIDER.codex,
             localDraftError,
+            {
+              defaultChildModel: settings.defaultSupervisorChildModel,
+              defaultMaxConcurrentChildren:
+                settings.defaultSupervisorMaxConcurrentChildren ??
+                DEFAULT_SUPERVISOR_MAX_CONCURRENT_CHILDREN,
+            },
           )
         : undefined,
-    [draftThread, fallbackDraftProject?.model, localDraftError, threadId],
+    [
+      draftThread,
+      fallbackDraftProject?.model,
+      localDraftError,
+      settings.defaultSupervisorChildModel,
+      settings.defaultSupervisorMaxConcurrentChildren,
+      threadId,
+    ],
   );
   const activeThread = serverThread ?? localDraftThread;
   const runtimeMode =
@@ -866,7 +987,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const activeThreadId = activeThread?.id ?? null;
   const activeLatestTurn = activeThread?.latestTurn ?? null;
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
+  const hasUnsettledTurn = activeLatestTurn !== null && !latestTurnSettled;
   const activeProject = projects.find((p) => p.id === activeThread?.projectId);
+  const isSubAgentThread = activeThread?.agentRole === "sub-agent";
+  const supervisorState = activeThread?.supervisorState ?? null;
 
   useEffect(() => {
     if (!activeThread?.id) return;
@@ -1015,7 +1139,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const phase = derivePhase(activeThread?.session ?? null);
   const isSendBusy = sendPhase !== "idle";
   const isPreparingWorktree = sendPhase === "preparing-worktree";
-  const isWorking = phase === "running" || isSendBusy || isConnecting || isRevertingCheckpoint;
+  const isWorking =
+    phase === "running" ||
+    hasUnsettledTurn ||
+    isSendBusy ||
+    isConnecting ||
+    isRevertingCheckpoint;
   const nowIso = new Date(nowTick).toISOString();
   const activeWorkStartedAt = deriveActiveWorkStartedAt(
     activeLatestTurn,
@@ -1081,6 +1210,32 @@ export default function ChatView({ threadId }: ChatViewProps) {
       activeLatestTurn?.turnId ?? null,
     );
   }, [activeLatestTurn?.turnId, activeThread?.proposedPlans, latestTurnSettled]);
+  const activeSupervisorExecutionPlan = useMemo(() => {
+    if (
+      activeThread?.agentRole !== "supervisor" ||
+      !activeThread.supervisorState?.activePlanId
+    ) {
+      return null;
+    }
+    return (
+      activeThread.proposedPlans.find(
+        (plan) => plan.id === activeThread.supervisorState?.activePlanId,
+      ) ?? null
+    );
+  }, [activeThread]);
+  const activeSupervisorSourcePlan = useMemo(() => {
+    if (activeThread?.agentRole !== "supervisor" || !activeThread.supervisorState) {
+      return null;
+    }
+    if (activeThread.supervisorState.sourcePlanId) {
+      return (
+        activeThread.proposedPlans.find(
+          (plan) => plan.id === activeThread.supervisorState?.sourcePlanId,
+        ) ?? null
+      );
+    }
+    return activeProposedPlan;
+  }, [activeProposedPlan, activeThread]);
   const activePlan = useMemo(
     () => deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],
@@ -1088,6 +1243,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
     interactionMode === "plan" &&
+    activeThread?.agentRole !== "supervisor" &&
     latestTurnSettled &&
     activeProposedPlan !== null;
   const activePendingApproval = pendingApprovals[0] ?? null;
@@ -1890,9 +2046,37 @@ export default function ChatView({ threadId }: ChatViewProps) {
       threadId,
     ],
   );
+  const interactionModeOptions = useMemo<ReadonlyArray<ProviderInteractionMode>>(
+    () =>
+      activeThread?.agentRole === "supervisor"
+        ? ["default", "plan", "agent-plan"]
+        : ["default", "plan"],
+    [activeThread?.agentRole],
+  );
+  const currentInteractionModeIndex = interactionModeOptions.indexOf(interactionMode);
   const toggleInteractionMode = useCallback(() => {
-    handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
-  }, [handleInteractionModeChange, interactionMode]);
+    const nextIndex =
+      currentInteractionModeIndex < 0
+        ? 0
+        : (currentInteractionModeIndex + 1) % interactionModeOptions.length;
+    handleInteractionModeChange(interactionModeOptions[nextIndex] ?? "default");
+  }, [currentInteractionModeIndex, handleInteractionModeChange, interactionModeOptions]);
+  const interactionModeButtonLabel =
+    interactionMode === "plan"
+      ? "Plan"
+      : interactionMode === "agent-plan"
+        ? "Agent plan"
+        : "Chat";
+  const interactionModeButtonTitle =
+    interactionMode === "plan"
+      ? activeThread?.agentRole === "supervisor"
+        ? "Plan mode — click to switch to agent plan mode"
+        : "Plan mode — click to return to normal chat mode"
+      : interactionMode === "agent-plan"
+        ? "Agent plan mode — click to return to normal chat mode"
+        : activeThread?.agentRole === "supervisor"
+          ? "Chat mode — click to enter plan mode"
+          : "Default mode — click to enter plan mode";
 
   const persistThreadSettingsForNextTurn = useCallback(
     async (input: {
@@ -2556,46 +2740,145 @@ export default function ChatView({ threadId }: ChatViewProps) {
     toggleTerminalVisibility,
   ]);
 
-  const addComposerImages = (files: File[]) => {
-    if (!activeThreadId || files.length === 0) return;
+  const addComposerImages = useCallback(
+    (files: File[]) => {
+      if (!activeThreadId || files.length === 0) return;
 
-    const nextImages: ComposerImageAttachment[] = [];
-    let nextImageCount = composerImagesRef.current.length;
-    let error: string | null = null;
-    for (const file of files) {
-      if (!file.type.startsWith("image/")) {
-        error = `Unsupported file type for '${file.name}'. Please attach image files only.`;
-        continue;
-      }
-      if (file.size > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
-        error = `'${file.name}' exceeds the ${IMAGE_SIZE_LIMIT_LABEL} attachment limit.`;
-        continue;
-      }
-      if (nextImageCount >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
-        error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} images per message.`;
-        break;
+      const nextImages: ComposerImageAttachment[] = [];
+      let nextImageCount = composerImagesRef.current.length;
+      let error: string | null = null;
+      for (const file of files) {
+        if (!file.type.startsWith("image/")) {
+          error = `Unsupported file type for '${file.name}'. Please attach image files only.`;
+          continue;
+        }
+        if (file.size > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
+          error = `'${file.name}' exceeds the ${IMAGE_SIZE_LIMIT_LABEL} attachment limit.`;
+          continue;
+        }
+        if (nextImageCount >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+          error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} images per message.`;
+          break;
+        }
+
+        const previewUrl = URL.createObjectURL(file);
+        nextImages.push({
+          type: "image",
+          id: crypto.randomUUID(),
+          name: file.name || "image",
+          mimeType: file.type,
+          sizeBytes: file.size,
+          previewUrl,
+          file,
+        });
+        nextImageCount += 1;
       }
 
-      const previewUrl = URL.createObjectURL(file);
-      nextImages.push({
-        type: "image",
-        id: crypto.randomUUID(),
-        name: file.name || "image",
-        mimeType: file.type,
-        sizeBytes: file.size,
-        previewUrl,
-        file,
-      });
-      nextImageCount += 1;
-    }
+      if (nextImages.length === 1 && nextImages[0]) {
+        addComposerImage(nextImages[0]);
+      } else if (nextImages.length > 1) {
+        addComposerImagesToDraft(nextImages);
+      }
+      setThreadError(activeThreadId, error);
+    },
+    [activeThreadId, addComposerImage, addComposerImagesToDraft, setThreadError],
+  );
 
-    if (nextImages.length === 1 && nextImages[0]) {
-      addComposerImage(nextImages[0]);
-    } else if (nextImages.length > 1) {
-      addComposerImagesToDraft(nextImages);
-    }
-    setThreadError(activeThreadId, error);
-  };
+  const appendTextAttachmentsToPrompt = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) {
+        return;
+      }
+
+      const nextBlocks: string[] = [];
+      const nextAttachmentMetadata: ComposerTextAttachment[] = [];
+      const errorMessages: string[] = [];
+      for (const file of files) {
+        if (!isSupportedTextAttachment(file)) {
+          errorMessages.push(`'${file.name}' is not a supported text file attachment.`);
+          continue;
+        }
+        if (file.size > TEXT_ATTACHMENT_MAX_BYTES) {
+          errorMessages.push(
+            `'${file.name}' exceeds the ${TEXT_ATTACHMENT_SIZE_LIMIT_LABEL} text attachment limit.`,
+          );
+          continue;
+        }
+        try {
+          const contents = await file.text();
+          if (!contents.trim()) {
+            errorMessages.push(`'${file.name}' is empty.`);
+            continue;
+          }
+          nextBlocks.push(buildTextAttachmentPromptBlock(file, contents));
+          nextAttachmentMetadata.push({
+            id: crypto.randomUUID(),
+            name: file.name,
+          });
+        } catch (error) {
+          errorMessages.push(
+            error instanceof Error
+              ? `Failed to read '${file.name}': ${error.message}`
+              : `Failed to read '${file.name}'.`,
+          );
+        }
+      }
+
+      if (nextBlocks.length > 0) {
+        const existingPrompt = promptRef.current.trimEnd();
+        const combinedBlocks = nextBlocks.join("\n\n");
+        const nextPrompt =
+          existingPrompt.length > 0 ? `${existingPrompt}\n\n${combinedBlocks}` : combinedBlocks;
+        setComposerPromptValue(nextPrompt);
+        setComposerDraftTextAttachments(threadId, [
+          ...composerTextAttachments,
+          ...nextAttachmentMetadata.filter(
+            (attachment) =>
+              !composerTextAttachments.some((existing) => existing.name === attachment.name),
+          ),
+        ]);
+        composerEditorRef.current?.focusAtEnd();
+      }
+
+      setThreadError(activeThreadId ?? threadId, errorMessages[0] ?? null);
+    },
+    [
+      activeThreadId,
+      composerTextAttachments,
+      threadId,
+      setComposerDraftTextAttachments,
+      setComposerPromptValue,
+      setThreadError,
+    ],
+  );
+
+  const handleComposerFiles = useCallback(
+    async (files: File[]) => {
+      if (!activeThreadId || files.length === 0 || activePendingProgress != null) {
+        return;
+      }
+
+      const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+      const textFiles = files.filter((file) => !file.type.startsWith("image/"));
+
+      if (imageFiles.length > 0) {
+        addComposerImages(imageFiles);
+      }
+      if (textFiles.length > 0) {
+        await appendTextAttachmentsToPrompt(textFiles);
+      }
+      if (imageFiles.length === 0 && textFiles.length === 0) {
+        setThreadError(activeThreadId, "No supported files were selected.");
+      }
+    },
+    [
+      activePendingProgress,
+      activeThreadId,
+      addComposerImages,
+      appendTextAttachmentsToPrompt,
+      setThreadError,
+    ],
+  );
 
   const removeComposerImage = (imageId: string) => {
     removeComposerImageFromDraft(imageId);
@@ -2606,12 +2889,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
     if (files.length === 0) {
       return;
     }
-    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
-    if (imageFiles.length === 0) {
-      return;
-    }
     event.preventDefault();
-    addComposerImages(imageFiles);
+    void handleComposerFiles(files);
   };
 
   const onComposerDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
@@ -2655,7 +2934,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     dragDepthRef.current = 0;
     setIsDragOverComposer(false);
     const files = Array.from(event.dataTransfer.files);
-    addComposerImages(files);
+    void handleComposerFiles(files);
     focusComposer();
   };
 
@@ -2862,6 +3141,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
             model: threadCreateModel,
             runtimeMode: input.runtimeMode,
             interactionMode: input.interactionMode,
+            agentRole: activeThread.agentRole,
+            parentThreadId: activeThread.parentThreadId,
+            supervisorState: activeThread.supervisorState,
             branch: nextThreadBranch,
             worktreePath: nextThreadWorktreePath,
             createdAt: activeThread.createdAt,
@@ -3197,6 +3479,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
     if (activePendingProgress) {
       dismissComposerKeyboard();
       onAdvanceActivePendingUserInput();
+      return;
+    }
+    if (isSubAgentThread) {
+      setThreadError(
+        activeThread.id,
+        "Child threads are read-only. Use Take over child to continue work directly.",
+      );
       return;
     }
     const trimmed = prompt.trim();
@@ -3703,6 +3992,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
         model: nextThreadModel,
         runtimeMode,
         interactionMode: "default",
+        agentRole: "standard",
+        parentThreadId: null,
+        supervisorState: null,
         branch: activeThread.branch,
         worktreePath: activeThread.worktreePath,
         createdAt,
@@ -3789,6 +4081,68 @@ export default function ChatView({ threadId }: ChatViewProps) {
       settings.enableAssistantStreaming,
       syncServerReadModel,
   ]);
+
+  const onApproveSupervisorPlan = useCallback(async () => {
+    const api = readNativeApi();
+    if (!api || !activeThread || !activeSupervisorExecutionPlan || !supervisorState) {
+      return;
+    }
+    if (!parseSupervisorPlan(activeSupervisorExecutionPlan.planMarkdown)) {
+      setThreadError(
+        activeThread.id,
+        "Supervisor execution plan is missing a valid t3-supervisor-plan JSON block.",
+      );
+      return;
+    }
+    await api.orchestration.dispatchCommand({
+      type: "thread.supervisor-plan.approve",
+      commandId: newCommandId(),
+      threadId: activeThread.id,
+      planId: activeSupervisorExecutionPlan.id,
+      createdAt: new Date().toISOString(),
+    });
+  }, [activeSupervisorExecutionPlan, activeThread, setThreadError, supervisorState]);
+
+  const onRejectSupervisorPlan = useCallback(async () => {
+    const api = readNativeApi();
+    if (!api || !activeThread || !activeSupervisorExecutionPlan) {
+      return;
+    }
+    await api.orchestration.dispatchCommand({
+      type: "thread.supervisor-plan.reject",
+      commandId: newCommandId(),
+      threadId: activeThread.id,
+      planId: activeSupervisorExecutionPlan.id,
+      createdAt: new Date().toISOString(),
+    });
+  }, [activeSupervisorExecutionPlan, activeThread]);
+
+  const onGenerateSupervisorExecutionPlan = useCallback(async () => {
+    const api = readNativeApi();
+    if (!api || !activeThread || !activeSupervisorSourcePlan) {
+      return;
+    }
+    await api.orchestration.dispatchCommand({
+      type: "thread.supervisor-plan.generate",
+      commandId: newCommandId(),
+      threadId: activeThread.id,
+      sourcePlanId: activeSupervisorSourcePlan.id,
+      createdAt: new Date().toISOString(),
+    });
+  }, [activeSupervisorSourcePlan, activeThread]);
+
+  const onTakeOverChildThread = useCallback(async () => {
+    const api = readNativeApi();
+    if (!api || !activeThread || !isSubAgentThread) {
+      return;
+    }
+    await api.orchestration.dispatchCommand({
+      type: "thread.child.takeover",
+      commandId: newCommandId(),
+      threadId: activeThread.id,
+      createdAt: new Date().toISOString(),
+    });
+  }, [activeThread, isSubAgentThread]);
 
   const onProviderModelSelect = useCallback(
     (provider: ProviderKind, model: ModelSlug) => {
@@ -4159,6 +4513,15 @@ export default function ChatView({ threadId }: ChatViewProps) {
       <ProviderHealthBanner status={activeProviderStatus} />
       <ThreadErrorBanner error={activeThread.error} />
       <PlanModePanel activePlan={activePlan} />
+      <SupervisorModePanel
+        thread={activeThread}
+        sourcePlan={activeSupervisorSourcePlan}
+        executionPlan={activeSupervisorExecutionPlan}
+        onApprove={onApproveSupervisorPlan}
+        onReject={onRejectSupervisorPlan}
+        onGenerateExecutionPlan={onGenerateSupervisorExecutionPlan}
+        onTakeOverChild={onTakeOverChildThread}
+      />
 
       {/* Messages */}
       <div
@@ -4351,8 +4714,19 @@ export default function ChatView({ threadId }: ChatViewProps) {
                 </div>
               )}
 
-              {!isComposerApprovalState && pendingUserInputs.length === 0 && composerImages.length > 0 && (
+              {!isComposerApprovalState &&
+              pendingUserInputs.length === 0 &&
+              (composerTextAttachments.length > 0 || composerImages.length > 0) ? (
                 <div className="mb-3 flex flex-wrap gap-2">
+                  {composerTextAttachments.map((attachment) => (
+                    <div
+                      key={attachment.id}
+                      className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border/80 bg-muted/35 px-2.5 py-1 text-xs text-foreground/85"
+                    >
+                      <FileIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+                      <span className="truncate">{attachment.name}</span>
+                    </div>
+                  ))}
                   {composerImages.map((image) => (
                     <div
                       key={image.id}
@@ -4414,7 +4788,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                     </div>
                   ))}
                 </div>
-              )}
+              ) : null}
               <ComposerPromptEditor
                 ref={composerEditorRef}
                 value={
@@ -4432,14 +4806,19 @@ export default function ChatView({ threadId }: ChatViewProps) {
                   isComposerApprovalState
                     ? (activePendingApproval?.detail ?? "Resolve this approval request to continue")
                     : activePendingProgress
-                    ? "Type your own answer, or leave this blank to use the selected option"
-                    : showPlanFollowUpPrompt && activeProposedPlan
-                      ? "Add feedback to refine the plan, or leave this blank to implement it"
-                      : phase === "disconnected"
-                        ? "Ask for follow-up changes or attach images"
-                        : "Ask anything, @tag files/folders, or use /model"
+                      ? "Type your own answer, or leave this blank to use the selected option"
+                      : activeThread?.agentRole === "supervisor" &&
+                          interactionMode === "agent-plan"
+                        ? "Paste or attach an implementation plan to convert it into an executable multi-agent plan"
+                        : showPlanFollowUpPrompt && activeProposedPlan
+                          ? "Add feedback to refine the plan, or leave this blank to implement it"
+                          : isSubAgentThread
+                            ? "Child thread chat is disabled until you take over this thread"
+                            : phase === "disconnected"
+                              ? "Ask for follow-up changes or attach files"
+                              : "Ask anything, @tag files/folders, or use /model"
                 }
-                disabled={isConnecting || isComposerApprovalState}
+                disabled={isConnecting || isComposerApprovalState || isSubAgentThread}
                 onFocus={() => {
                   if (!isCompactPhoneShell) {
                     return;
@@ -4452,6 +4831,19 @@ export default function ChatView({ threadId }: ChatViewProps) {
                     return;
                   }
                   setIsCompactPhoneComposerFocused(false);
+                }}
+              />
+              <input
+                ref={composerFileInputRef}
+                type="file"
+                className="sr-only"
+                multiple
+                tabIndex={-1}
+                aria-hidden="true"
+                onChange={(event) => {
+                  const files = Array.from(event.currentTarget.files ?? []);
+                  event.currentTarget.value = "";
+                  void handleComposerFiles(files);
                 }}
               />
             </div>
@@ -4482,6 +4874,28 @@ export default function ChatView({ threadId }: ChatViewProps) {
                       : "flex-1 overflow-x-auto sm:min-w-max sm:overflow-visible",
                   )}
                 >
+                  <Button
+                    variant="ghost"
+                    className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
+                    size="sm"
+                    type="button"
+                    disabled={
+                      isConnecting ||
+                      isComposerApprovalState ||
+                      isSubAgentThread ||
+                      activePendingProgress != null
+                    }
+                    title="Attach files"
+                    onClick={() => composerFileInputRef.current?.click()}
+                  >
+                    <FileIcon />
+                    <span className={cn(isCompactPhoneShell ? "not-sr-only" : "sr-only sm:not-sr-only")}>
+                      Attach
+                    </span>
+                  </Button>
+
+                  <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
+
                   {/* Provider/model picker */}
                   <ProviderModelPicker
                     provider={selectedProvider}
@@ -4516,15 +4930,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
                     size="sm"
                     type="button"
                     onClick={toggleInteractionMode}
-                    title={
-                      interactionMode === "plan"
-                        ? "Plan mode — click to return to normal chat mode"
-                        : "Default mode — click to enter plan mode"
-                    }
+                    title={interactionModeButtonTitle}
                   >
                     <BotIcon />
                     <span className={cn(isCompactPhoneShell ? "not-sr-only" : "sr-only sm:not-sr-only")}>
-                      {interactionMode === "plan" ? "Plan" : "Chat"}
+                      {interactionModeButtonLabel}
                     </span>
                   </Button>
 
@@ -4628,7 +5038,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
                       <Button
                         type="button"
                         className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/90 text-primary-foreground transition-all duration-150 hover:bg-primary hover:scale-105 disabled:opacity-30 disabled:hover:scale-100 sm:h-8 sm:w-8"
-                        disabled={prompt.trim().length === 0 && composerImages.length === 0}
+                        disabled={
+                          isSubAgentThread ||
+                          (prompt.trim().length === 0 && composerImages.length === 0)
+                        }
                         onClick={() => void queueCurrentComposerFollowUp()}
                         aria-label="Queue message"
                       >
@@ -4654,6 +5067,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                         variant="outline"
                         className="h-9 rounded-full px-4 sm:h-8"
                         disabled={
+                          isSubAgentThread ||
                           (prompt.trim().length === 0 && composerImages.length === 0) ||
                           !activeThread.session?.activeTurnId
                         }
@@ -4714,6 +5128,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                           type="submit"
                           className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/90 text-primary-foreground transition-all duration-150 hover:bg-primary hover:scale-105 disabled:opacity-30 disabled:hover:scale-100 sm:h-8 sm:w-8"
                           disabled={
+                            isSubAgentThread ||
                             isSendBusy ||
                             isConnecting ||
                             (!prompt.trim() && composerImages.length === 0)
@@ -5158,6 +5573,195 @@ const ComposerPendingApprovalActions = memo(function ComposerPendingApprovalActi
 interface PlanModePanelProps {
   activePlan: ReturnType<typeof deriveActivePlanState>;
 }
+
+const SupervisorModePanel = memo(function SupervisorModePanel({
+  thread,
+  sourcePlan,
+  executionPlan,
+  onApprove,
+  onReject,
+  onGenerateExecutionPlan,
+  onTakeOverChild,
+}: {
+  thread: Thread;
+  sourcePlan: ProposedPlan | null;
+  executionPlan: ProposedPlan | null;
+  onApprove: () => void;
+  onReject: () => void;
+  onGenerateExecutionPlan: () => void;
+  onTakeOverChild: () => void;
+}) {
+  if (thread.agentRole === "sub-agent") {
+    return (
+      <div className="mx-auto max-w-3xl pt-3">
+        <div className="rounded-xl border border-border/70 bg-muted/30 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary">Child Thread</Badge>
+                <span className="text-xs text-muted-foreground">
+                  Delegated by a supervisor
+                </span>
+              </div>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Normal chat is disabled here until you explicitly take over this child thread.
+              </p>
+            </div>
+            <Button type="button" size="sm" variant="outline" onClick={onTakeOverChild}>
+              Take over child
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (thread.agentRole !== "supervisor" || !thread.supervisorState) {
+    return null;
+  }
+
+  const parsedExecutionPlan = executionPlan ? parseSupervisorPlan(executionPlan.planMarkdown) : null;
+  const runningCount = thread.supervisorState.delegations.filter((entry) => entry.status === "running").length;
+  const completedCount = thread.supervisorState.delegations.filter((entry) => entry.status === "completed").length;
+  const failedCount = thread.supervisorState.delegations.filter((entry) => entry.status === "failed").length;
+  const queuedCount = thread.supervisorState.delegations.filter((entry) => entry.status === "queued").length;
+  const lifecycleLabel = thread.supervisorState.lifecycleState.replaceAll("_", " ");
+  const childModelLabel = thread.supervisorState.childModel ?? thread.model;
+
+  return (
+    <div className="mx-auto max-w-3xl pt-3">
+      <div className="rounded-xl border border-border/70 bg-muted/30 p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="secondary">Supervisor</Badge>
+          <span className="text-xs text-muted-foreground">
+            {lifecycleLabel}
+          </span>
+          <Badge variant="outline">Sub-agent model: {childModelLabel}</Badge>
+          <span className="text-xs text-muted-foreground">
+            Max concurrent children: {thread.supervisorState.maxConcurrentChildren}
+          </span>
+        </div>
+
+        {thread.supervisorState.structuringError ? (
+          <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+            <p className="text-sm text-amber-700 dark:text-amber-300">
+              {thread.supervisorState.structuringError}
+            </p>
+            {sourcePlan ? (
+              <div className="mt-3 flex items-center gap-2">
+                <Button type="button" size="sm" onClick={onGenerateExecutionPlan}>
+                  Retry executable plan generation
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Reuses the latest human-readable plan as the source.
+                </span>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {sourcePlan ? (
+          <div className="mt-3 rounded-lg border border-border/60 bg-background/70 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline">Human plan</Badge>
+              <span className="text-xs text-muted-foreground">
+                {proposedPlanTitle(sourcePlan.planMarkdown) ?? "Latest supervisor plan"}
+              </span>
+            </div>
+            <p className="mt-2 line-clamp-3 text-sm text-muted-foreground">
+              {sourcePlan.planMarkdown}
+            </p>
+          </div>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">
+            {thread.interactionMode === "agent-plan"
+              ? "Paste an existing implementation plan here. The supervisor will convert it directly into an executable child-agent plan for approval."
+              : "Ask the supervisor to draft a multi-agent plan. It will be converted into an executable child-agent plan before anything runs."}
+          </p>
+        )}
+
+        {thread.supervisorState.lifecycleState === "structuring_execution_plan" ? (
+          <div className="mt-3 rounded-lg border border-border/60 bg-background/70 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline">Generating executable plan</Badge>
+              <span className="text-xs text-muted-foreground">
+                Running an internal supervisor turn to turn the human plan into structured
+                sub-agent tasks.
+              </span>
+            </div>
+          </div>
+        ) : null}
+
+        {parsedExecutionPlan ? (
+          <div className="mt-3 space-y-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="default">Executable multi-agent plan</Badge>
+              <span className="text-xs text-muted-foreground">
+                Review this exact delegation plan before child threads launch.
+              </span>
+            </div>
+            <div>
+              <div className="font-medium text-foreground">Objective</div>
+              <p className="text-muted-foreground">{parsedExecutionPlan.objective}</p>
+            </div>
+            <div>
+              <div className="font-medium text-foreground">Review Strategy</div>
+              <p className="text-muted-foreground">{parsedExecutionPlan.reviewStrategy}</p>
+            </div>
+            <div>
+              <div className="font-medium text-foreground">Sub-agent Tasks</div>
+              <div className="mt-2 space-y-2">
+                {parsedExecutionPlan.tasks.map((task) => (
+                  <div
+                    key={`${task.title}:${task.prompt}`}
+                    className="rounded-lg border border-border/60 bg-background/80 px-3 py-2"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="font-medium text-foreground">{task.title}</div>
+                      <Badge variant={task.writeAccess ? "default" : "outline"}>
+                        {task.writeAccess ? "Write-capable" : "Read-only"}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-muted-foreground">{task.prompt}</p>
+                    {task.expectedOutput ? (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        Expected output: {task.expectedOutput}
+                      </p>
+                    ) : null}
+                    {task.reviewInstructions ? (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Review: {task.reviewInstructions}
+                      </p>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+            {thread.supervisorState.lifecycleState === "awaiting_plan_approval" ? (
+              <div className="flex items-center gap-2">
+                <Button type="button" size="sm" onClick={onApprove}>
+                  Approve execution plan
+                </Button>
+                <Button type="button" size="sm" variant="outline" onClick={onReject}>
+                  Reject
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {thread.supervisorState.delegations.length > 0 ? (
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <Badge variant="outline">Running {runningCount}</Badge>
+            <Badge variant="outline">Queued {queuedCount}</Badge>
+            <Badge variant="outline">Completed {completedCount}</Badge>
+            <Badge variant="outline">Failed {failedCount}</Badge>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+});
 
 const PlanModePanel = memo(function PlanModePanel({ activePlan }: PlanModePanelProps) {
   if (!activePlan) return null;

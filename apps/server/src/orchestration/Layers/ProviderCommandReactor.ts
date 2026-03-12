@@ -4,6 +4,7 @@ import {
   EventId,
   type OrchestrationEvent,
   type ProviderModelOptions,
+  type ProviderInteractionMode,
   type ProviderKind,
   type ProviderSessionStartInput,
   type ProviderServiceTier,
@@ -13,6 +14,10 @@ import {
   type RuntimeMode,
   type TurnId,
 } from "@t3tools/contracts";
+import {
+  buildSupervisorDirectExecutionPlanInstructions,
+  buildSupervisorPlanningInstructions,
+} from "@t3tools/shared/supervisor";
 import { Cache, Cause, Duration, Effect, Layer, Option, Queue, Schema, Stream } from "effect";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
@@ -329,7 +334,7 @@ const make = Effect.gen(function* () {
     readonly serviceTier?: ProviderServiceTier | null;
     readonly modelOptions?: ProviderModelOptions;
     readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
-    readonly interactionMode?: "default" | "plan";
+    readonly interactionMode?: ProviderInteractionMode;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
@@ -354,6 +359,20 @@ const make = Effect.gen(function* () {
         : (yield* providerService.getCapabilities(activeSession.provider)).sessionModelSwitch;
     const modelForTurn =
       sessionModelSwitch === "unsupported" ? activeSession?.model : input.model;
+    const supervisorInstructions =
+      thread.agentRole === "supervisor" &&
+      thread.supervisorState &&
+      (thread.supervisorState.lifecycleState === "drafting_plan" ||
+        thread.supervisorState.lifecycleState === "awaiting_plan_approval")
+        ? input.interactionMode === "agent-plan"
+          ? buildSupervisorDirectExecutionPlanInstructions({
+              maxConcurrentChildren: thread.supervisorState.maxConcurrentChildren,
+              childModel: thread.supervisorState.childModel,
+            })
+          : buildSupervisorPlanningInstructions({
+              maxConcurrentChildren: thread.supervisorState.maxConcurrentChildren,
+            })
+        : undefined;
 
     yield* providerService.sendTurn({
       threadId: input.threadId,
@@ -362,7 +381,18 @@ const make = Effect.gen(function* () {
       ...(modelForTurn !== undefined ? { model: modelForTurn } : {}),
       ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
       ...(input.modelOptions !== undefined ? { modelOptions: input.modelOptions } : {}),
-      ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      ...(input.interactionMode !== undefined
+        ? {
+            interactionMode:
+              supervisorInstructions &&
+              (input.interactionMode === "default" || input.interactionMode === "agent-plan")
+                ? "plan"
+                : input.interactionMode,
+          }
+        : {}),
+      ...(supervisorInstructions
+        ? { developerInstructionsAppend: supervisorInstructions }
+        : {}),
     });
   });
 

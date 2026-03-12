@@ -76,6 +76,7 @@ export const ProviderSendTurnInput = Schema.Struct({
   serviceTier: Schema.optional(Schema.NullOr(ProviderServiceTier)),
   modelOptions: Schema.optional(ProviderModelOptions),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  developerInstructionsAppend: Schema.optional(Schema.String),
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 
@@ -99,6 +100,7 @@ export const ProviderSteerTurnInput = Schema.Struct({
   serviceTier: Schema.optional(Schema.NullOr(ProviderServiceTier)),
   modelOptions: Schema.optional(ProviderModelOptions),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  developerInstructionsAppend: Schema.optional(Schema.String),
 });
 export type ProviderSteerTurnInput = typeof ProviderSteerTurnInput.Type;
 

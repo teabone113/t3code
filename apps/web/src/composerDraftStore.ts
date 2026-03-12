@@ -1,4 +1,5 @@
 import {
+  type AgentRole,
   DEFAULT_REASONING_EFFORT_BY_PROVIDER,
   ProjectId,
   REASONING_EFFORT_OPTIONS_BY_PROVIDER,
@@ -28,6 +29,11 @@ export interface PersistedComposerImageAttachment {
   dataUrl: string;
 }
 
+export interface ComposerTextAttachment {
+  id: string;
+  name: string;
+}
+
 export interface QueuedComposerFollowUp {
   id: string;
   prompt: string;
@@ -49,6 +55,7 @@ export interface ComposerImageAttachment extends Omit<ChatImageAttachment, "prev
 interface PersistedComposerThreadDraftState {
   prompt: string;
   attachments: PersistedComposerImageAttachment[];
+  textAttachments?: ComposerTextAttachment[];
   queuedFollowUps?: QueuedComposerFollowUp[];
   provider?: ProviderKind | null;
   model?: string | null;
@@ -62,6 +69,7 @@ interface PersistedComposerThreadDraftState {
 interface PersistedDraftThreadState {
   projectId: ProjectId;
   createdAt: string;
+  agentRole: AgentRole;
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
   branch: string | null;
@@ -78,6 +86,7 @@ interface PersistedComposerDraftStoreState {
 interface ComposerThreadDraftState {
   prompt: string;
   images: ComposerImageAttachment[];
+  textAttachments: ComposerTextAttachment[];
   nonPersistedImageIds: string[];
   persistedAttachments: PersistedComposerImageAttachment[];
   queuedFollowUps: QueuedComposerFollowUp[];
@@ -92,6 +101,7 @@ interface ComposerThreadDraftState {
 export interface DraftThreadState {
   projectId: ProjectId;
   createdAt: string;
+  agentRole: AgentRole;
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
   branch: string | null;
@@ -116,6 +126,7 @@ interface ComposerDraftStoreState {
       branch?: string | null;
       worktreePath?: string | null;
       createdAt?: string;
+      agentRole?: AgentRole;
       envMode?: DraftThreadEnvMode;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
@@ -128,6 +139,7 @@ interface ComposerDraftStoreState {
       worktreePath?: string | null;
       projectId?: ProjectId;
       createdAt?: string;
+      agentRole?: AgentRole;
       envMode?: DraftThreadEnvMode;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
@@ -164,6 +176,7 @@ interface ComposerDraftStoreState {
   addImage: (threadId: ThreadId, image: ComposerImageAttachment) => void;
   addImages: (threadId: ThreadId, images: ComposerImageAttachment[]) => void;
   removeImage: (threadId: ThreadId, imageId: string) => void;
+  setTextAttachments: (threadId: ThreadId, attachments: ComposerTextAttachment[]) => void;
   clearPersistedAttachments: (threadId: ThreadId) => void;
   syncPersistedAttachments: (
     threadId: ThreadId,
@@ -187,16 +200,19 @@ const EMPTY_PERSISTED_DRAFT_STORE_STATE: PersistedComposerDraftStoreState = {
 };
 
 const EMPTY_IMAGES: ComposerImageAttachment[] = [];
+const EMPTY_TEXT_ATTACHMENTS: ComposerTextAttachment[] = [];
 const EMPTY_IDS: string[] = [];
 const EMPTY_PERSISTED_ATTACHMENTS: PersistedComposerImageAttachment[] = [];
 const EMPTY_QUEUED_FOLLOW_UPS: QueuedComposerFollowUp[] = [];
 Object.freeze(EMPTY_IMAGES);
+Object.freeze(EMPTY_TEXT_ATTACHMENTS);
 Object.freeze(EMPTY_IDS);
 Object.freeze(EMPTY_PERSISTED_ATTACHMENTS);
 Object.freeze(EMPTY_QUEUED_FOLLOW_UPS);
 const EMPTY_THREAD_DRAFT = Object.freeze({
   prompt: "",
   images: EMPTY_IMAGES,
+  textAttachments: EMPTY_TEXT_ATTACHMENTS,
   nonPersistedImageIds: EMPTY_IDS,
   persistedAttachments: EMPTY_PERSISTED_ATTACHMENTS,
   queuedFollowUps: EMPTY_QUEUED_FOLLOW_UPS,
@@ -212,10 +228,21 @@ const REASONING_EFFORT_VALUES = new Set<CodexReasoningEffort>(
   REASONING_EFFORT_OPTIONS_BY_PROVIDER.codex,
 );
 
+function normalizeInteractionMode(
+  interactionMode: unknown,
+): ProviderInteractionMode | null {
+  return interactionMode === "default" ||
+    interactionMode === "plan" ||
+    interactionMode === "agent-plan"
+    ? interactionMode
+    : null;
+}
+
 function createEmptyThreadDraft(): ComposerThreadDraftState {
   return {
     prompt: "",
     images: [],
+    textAttachments: [],
     nonPersistedImageIds: [],
     persistedAttachments: [],
     queuedFollowUps: [],
@@ -238,6 +265,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
   return (
     draft.prompt.length === 0 &&
     draft.images.length === 0 &&
+    draft.textAttachments.length === 0 &&
     draft.persistedAttachments.length === 0 &&
     draft.queuedFollowUps.length === 0 &&
     draft.provider === null &&
@@ -294,6 +322,19 @@ function normalizePersistedAttachment(value: unknown): PersistedComposerImageAtt
   };
 }
 
+function normalizeComposerTextAttachment(value: unknown): ComposerTextAttachment | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  const id = candidate.id;
+  const name = candidate.name;
+  if (typeof id !== "string" || id.length === 0 || typeof name !== "string" || name.length === 0) {
+    return null;
+  }
+  return { id, name };
+}
+
 function normalizeQueuedComposerFollowUp(value: unknown): QueuedComposerFollowUp | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -322,10 +363,7 @@ function normalizeQueuedComposerFollowUp(value: unknown): QueuedComposerFollowUp
     candidate.runtimeMode === "approval-required" || candidate.runtimeMode === "full-access"
       ? candidate.runtimeMode
       : null;
-  const interactionMode =
-    candidate.interactionMode === "plan" || candidate.interactionMode === "default"
-      ? candidate.interactionMode
-      : null;
+  const interactionMode = normalizeInteractionMode(candidate.interactionMode);
   const effortCandidate = typeof candidate.effort === "string" ? candidate.effort : null;
   const effort =
     effortCandidate && REASONING_EFFORT_VALUES.has(effortCandidate as CodexReasoningEffort)
@@ -392,16 +430,18 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
           typeof createdAt === "string" && createdAt.length > 0
             ? createdAt
             : new Date().toISOString(),
+        agentRole:
+          candidateDraftThread.agentRole === "supervisor" ||
+          candidateDraftThread.agentRole === "sub-agent"
+            ? candidateDraftThread.agentRole
+            : "standard",
         runtimeMode:
           candidateDraftThread.runtimeMode === "approval-required" ||
           candidateDraftThread.runtimeMode === "full-access"
             ? candidateDraftThread.runtimeMode
             : DEFAULT_RUNTIME_MODE,
         interactionMode:
-          candidateDraftThread.interactionMode === "plan" ||
-          candidateDraftThread.interactionMode === "default"
-            ? candidateDraftThread.interactionMode
-            : DEFAULT_INTERACTION_MODE,
+          normalizeInteractionMode(candidateDraftThread.interactionMode) ?? DEFAULT_INTERACTION_MODE,
         branch: typeof branch === "string" ? branch : null,
         worktreePath: normalizedWorktreePath,
         envMode: normalizeDraftThreadEnvMode(candidateDraftThread.envMode, normalizedWorktreePath),
@@ -428,6 +468,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
           draftThreadsByThreadId[threadId as ThreadId] = {
             projectId: projectId as ProjectId,
             createdAt: new Date().toISOString(),
+            agentRole: "standard",
             runtimeMode: DEFAULT_RUNTIME_MODE,
             interactionMode: DEFAULT_INTERACTION_MODE,
             branch: null,
@@ -462,6 +503,12 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
           return normalized ? [normalized] : [];
         })
       : [];
+    const textAttachments = Array.isArray(draftCandidate.textAttachments)
+      ? draftCandidate.textAttachments.flatMap((entry) => {
+          const normalized = normalizeComposerTextAttachment(entry);
+          return normalized ? [normalized] : [];
+        })
+      : [];
     const provider = normalizeProviderKind(draftCandidate.provider);
     const model =
       typeof draftCandidate.model === "string"
@@ -472,10 +519,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
       draftCandidate.runtimeMode === "full-access"
         ? draftCandidate.runtimeMode
         : null;
-    const interactionMode =
-      draftCandidate.interactionMode === "plan" || draftCandidate.interactionMode === "default"
-        ? draftCandidate.interactionMode
-        : null;
+    const interactionMode = normalizeInteractionMode(draftCandidate.interactionMode);
     const effortCandidate =
       typeof draftCandidate.effort === "string" ? draftCandidate.effort : null;
     const effort =
@@ -494,6 +538,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
     if (
       prompt.length === 0 &&
       attachments.length === 0 &&
+      textAttachments.length === 0 &&
       queuedFollowUps.length === 0 &&
       !provider &&
       !model &&
@@ -507,6 +552,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
     nextDraftsByThreadId[threadId as ThreadId] = {
       prompt,
       attachments,
+      ...(textAttachments.length > 0 ? { textAttachments } : {}),
       ...(queuedFollowUps.length > 0 ? { queuedFollowUps } : {}),
       ...(provider ? { provider } : {}),
       ...(model ? { model } : {}),
@@ -613,6 +659,7 @@ function toHydratedThreadDraft(
   return {
     prompt: persistedDraft.prompt,
     images: hydrateImagesFromPersisted(persistedDraft.attachments),
+    textAttachments: persistedDraft.textAttachments ?? [],
     nonPersistedImageIds: [],
     persistedAttachments: persistedDraft.attachments,
     queuedFollowUps: persistedDraft.queuedFollowUps ?? [],
@@ -668,6 +715,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           const nextDraftThread: DraftThreadState = {
             projectId,
             createdAt: options?.createdAt ?? existingThread?.createdAt ?? new Date().toISOString(),
+            agentRole: options?.agentRole ?? existingThread?.agentRole ?? "standard",
             runtimeMode: options?.runtimeMode ?? existingThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
             interactionMode:
               options?.interactionMode ??
@@ -687,6 +735,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             existingThread &&
             existingThread.projectId === nextDraftThread.projectId &&
             existingThread.createdAt === nextDraftThread.createdAt &&
+            existingThread.agentRole === nextDraftThread.agentRole &&
             existingThread.runtimeMode === nextDraftThread.runtimeMode &&
             existingThread.interactionMode === nextDraftThread.interactionMode &&
             existingThread.branch === nextDraftThread.branch &&
@@ -743,6 +792,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
               options.createdAt === undefined
                 ? existing.createdAt
                 : options.createdAt || existing.createdAt,
+            agentRole: options.agentRole ?? existing.agentRole,
             runtimeMode: options.runtimeMode ?? existing.runtimeMode,
             interactionMode: options.interactionMode ?? existing.interactionMode,
             branch: options.branch === undefined ? existing.branch : (options.branch ?? null),
@@ -754,6 +804,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           const isUnchanged =
             nextDraftThread.projectId === existing.projectId &&
             nextDraftThread.createdAt === existing.createdAt &&
+            nextDraftThread.agentRole === existing.agentRole &&
             nextDraftThread.runtimeMode === existing.runtimeMode &&
             nextDraftThread.interactionMode === existing.interactionMode &&
             nextDraftThread.branch === existing.branch &&
@@ -969,8 +1020,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         if (threadId.length === 0) {
           return;
         }
-        const nextInteractionMode =
-          interactionMode === "plan" || interactionMode === "default" ? interactionMode : null;
+        const nextInteractionMode = normalizeInteractionMode(interactionMode);
         set((state) => {
           const existing = state.draftsByThreadId[threadId];
           if (!existing && nextInteractionMode === null) {
@@ -1253,6 +1303,25 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           return { draftsByThreadId: nextDraftsByThreadId };
         });
       },
+      setTextAttachments: (threadId, attachments) => {
+        if (threadId.length === 0) {
+          return;
+        }
+        set((state) => {
+          const existing = state.draftsByThreadId[threadId] ?? createEmptyThreadDraft();
+          const nextDraft: ComposerThreadDraftState = {
+            ...existing,
+            textAttachments: attachments,
+          };
+          const nextDraftsByThreadId = { ...state.draftsByThreadId };
+          if (shouldRemoveDraft(nextDraft)) {
+            delete nextDraftsByThreadId[threadId];
+          } else {
+            nextDraftsByThreadId[threadId] = nextDraft;
+          }
+          return { draftsByThreadId: nextDraftsByThreadId };
+        });
+      },
       clearPersistedAttachments: (threadId) => {
         if (threadId.length === 0) {
           return;
@@ -1345,6 +1414,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             ...existing,
             prompt: content.prompt,
             images: hydratedImages,
+            textAttachments: [],
             nonPersistedImageIds: [],
             persistedAttachments: content.attachments,
           };
@@ -1370,6 +1440,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             ...current,
             prompt: "",
             images: [],
+            textAttachments: [],
             nonPersistedImageIds: [],
             persistedAttachments: [],
           };
@@ -1430,6 +1501,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           }
           if (
             draft.prompt.length === 0 &&
+            draft.textAttachments.length === 0 &&
             draft.persistedAttachments.length === 0 &&
             draft.queuedFollowUps.length === 0 &&
             draft.provider === null &&
@@ -1445,6 +1517,9 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             prompt: draft.prompt,
             attachments: draft.persistedAttachments,
           };
+          if (draft.textAttachments.length > 0) {
+            persistedDraft.textAttachments = draft.textAttachments;
+          }
           if (draft.queuedFollowUps.length > 0) {
             persistedDraft.queuedFollowUps = draft.queuedFollowUps;
           }

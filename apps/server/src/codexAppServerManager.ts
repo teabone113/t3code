@@ -115,6 +115,7 @@ export interface CodexAppServerSendTurnInput {
   readonly serviceTier?: string | null;
   readonly effort?: string;
   readonly interactionMode?: ProviderInteractionMode;
+  readonly developerInstructionsAppend?: string;
 }
 
 export interface CodexAppServerSteerTurnInput extends CodexAppServerSendTurnInput {
@@ -411,9 +412,10 @@ export function buildCodexInitializeParams() {
 }
 
 function buildCodexCollaborationMode(input: {
-  readonly interactionMode?: "default" | "plan";
+  readonly interactionMode?: ProviderInteractionMode;
   readonly model?: string;
   readonly effort?: string;
+  readonly developerInstructionsAppend?: string;
 }):
   | {
       mode: "code" | "plan";
@@ -429,14 +431,18 @@ function buildCodexCollaborationMode(input: {
   }
   const model = normalizeCodexModelSlug(input.model) ?? "gpt-5.3-codex";
   return {
-    mode: input.interactionMode === "plan" ? "plan" : "code",
+    mode: input.interactionMode === "plan" || input.interactionMode === "agent-plan" ? "plan" : "code",
     settings: {
       model,
       reasoning_effort: input.effort ?? "medium",
-      developer_instructions:
-        input.interactionMode === "plan"
+      developer_instructions: [
+        input.interactionMode === "plan" || input.interactionMode === "agent-plan"
           ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
           : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+        input.developerInstructionsAppend?.trim() ?? "",
+      ]
+        .filter((entry) => entry.length > 0)
+        .join("\n\n"),
     },
   };
 }
@@ -773,6 +779,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
       ...(normalizedModel !== undefined ? { model: normalizedModel } : {}),
       ...(input.effort !== undefined ? { effort: input.effort } : {}),
+      ...(input.developerInstructionsAppend !== undefined
+        ? { developerInstructionsAppend: input.developerInstructionsAppend }
+        : {}),
     });
     if (collaborationMode) {
       if (!turnStartParams.model) {
@@ -861,6 +870,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
       ...(normalizedModel !== undefined ? { model: normalizedModel } : {}),
       ...(input.effort !== undefined ? { effort: input.effort } : {}),
+      ...(input.developerInstructionsAppend !== undefined
+        ? { developerInstructionsAppend: input.developerInstructionsAppend }
+        : {}),
     });
     if (collaborationMode) {
       if (!turnSteerParams.model) {

@@ -27,6 +27,9 @@ const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 const MAX_CUSTOM_MODEL_COUNT = 32;
 const MAX_VISIBLE_OPENCODE_DELEGATE_COUNT = 64;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
+export const DEFAULT_SUPERVISOR_MAX_CONCURRENT_CHILDREN = 2;
+export const MIN_SUPERVISOR_MAX_CONCURRENT_CHILDREN = 1;
+export const MAX_SUPERVISOR_MAX_CONCURRENT_CHILDREN = 8;
 export const APP_FONT_SCALE_OPTIONS = [
   {
     value: "compact",
@@ -130,6 +133,12 @@ const AppSettingsSchema = Schema.Struct({
   ),
   defaultFolderOpenTool: Schema.NullOr(FolderOpenTargetId).pipe(
     Schema.withConstructorDefault(() => Option.some(null)),
+  ),
+  defaultSupervisorChildModel: Schema.NullOr(Schema.String).pipe(
+    Schema.withConstructorDefault(() => Option.some(null)),
+  ),
+  defaultSupervisorMaxConcurrentChildren: Schema.Number.pipe(
+    Schema.withConstructorDefault(() => Option.some(DEFAULT_SUPERVISOR_MAX_CONCURRENT_CHILDREN)),
   ),
   backendSelection: BackendSelection.pipe(
     Schema.withConstructorDefault(() => Option.some(BackendSelection.makeUnsafe({}))),
@@ -253,6 +262,13 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
     ),
     defaultFileOpenTool: normalizeOptionalFileOpenTool(settings.defaultFileOpenTool),
     defaultFolderOpenTool: normalizeOptionalFolderOpenTool(settings.defaultFolderOpenTool),
+    defaultSupervisorChildModel: normalizeOptionalSupervisorChildModel(
+      settings.defaultSupervisorChildModel,
+      settings.customCodexModels,
+    ),
+    defaultSupervisorMaxConcurrentChildren: normalizeSupervisorMaxConcurrentChildren(
+      settings.defaultSupervisorMaxConcurrentChildren,
+    ),
     backendSelection,
   };
 }
@@ -316,6 +332,31 @@ function normalizeOptionalFolderOpenTool(
   }
   const decoded = Schema.decodeUnknownOption(FolderOpenTargetId)(tool);
   return decoded._tag === "Some" ? decoded.value : null;
+}
+
+function normalizeOptionalSupervisorChildModel(
+  model: string | null | undefined,
+  customModels: readonly string[],
+): string | null {
+  if (model == null) {
+    return null;
+  }
+  const normalized = model.trim();
+  if (!normalized) {
+    return null;
+  }
+  return resolveAppModelSelection("codex", customModels, normalized);
+}
+
+function normalizeSupervisorMaxConcurrentChildren(value: number | null | undefined): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_SUPERVISOR_MAX_CONCURRENT_CHILDREN;
+  }
+  const finiteValue = value as number;
+  return Math.min(
+    MAX_SUPERVISOR_MAX_CONCURRENT_CHILDREN,
+    Math.max(MIN_SUPERVISOR_MAX_CONCURRENT_CHILDREN, Math.round(finiteValue)),
+  );
 }
 
 export function normalizeRemoteBackendProfiles(

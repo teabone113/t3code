@@ -1,0 +1,225 @@
+version: "3"
+
+vars:
+  BUN: bun
+
+tasks:
+  default:
+    desc: List available development tasks
+    cmds:
+      - task --list-all
+
+  install:
+    desc: Install workspace dependencies
+    cmds:
+      - "{{.BUN}} install"
+
+  dev:
+    desc: Start the default local development stack
+    cmds:
+      - "{{.BUN}} run dev"
+
+  dev:web:
+    desc: Start the web app in development mode
+    cmds:
+      - "{{.BUN}} run dev:web"
+
+  dev:server:
+    desc: Start only the backend in development mode
+    cmds:
+      - "{{.BUN}} run dev:server"
+
+  dev:desktop:
+    desc: Start the desktop shell in development mode
+    cmds:
+      - "{{.BUN}} run dev:desktop"
+
+  dev:marketing:
+    desc: Start the marketing site in development mode
+    cmds:
+      - "{{.BUN}} run dev:marketing"
+
+  start:
+    desc: Start the production server app
+    cmds:
+      - "{{.BUN}} run start"
+
+  start:desktop:
+    desc: Start the packaged desktop shell entrypoint
+    cmds:
+      - "{{.BUN}} run start:desktop"
+
+  start:marketing:
+    desc: Preview the built marketing site
+    cmds:
+      - "{{.BUN}} run start:marketing"
+
+  build:
+    desc: Build the full monorepo
+    cmds:
+      - "{{.BUN}} run build"
+
+  build:web:
+    desc: Build the web app only
+    cmds:
+      - "{{.BUN}} run --cwd apps/web build"
+
+  build:server:
+    desc: Build the backend only
+    cmds:
+      - "{{.BUN}} run --cwd apps/server build"
+
+  build:desktop:
+    desc: Build the desktop shell, backend, and shared web bundle
+    cmds:
+      - "{{.BUN}} run build:desktop"
+
+  build:marketing:
+    desc: Build the marketing site
+    cmds:
+      - "{{.BUN}} run build:marketing"
+
+  build:contracts:
+    desc: Build the contracts package
+    cmds:
+      - "{{.BUN}} run build:contracts"
+
+  backend:headless:
+    desc: Run the backend headless for remote shells (override HOST/PORT if needed)
+    vars:
+      HOST: '{{default "0.0.0.0" .HOST}}'
+      PORT: '{{default "3773" .PORT}}'
+    cmds:
+      - "{{.BUN}} run --cwd apps/server start -- --host {{.HOST}} --port {{.PORT}} --no-browser"
+
+  lint:
+    desc: Run repository lint checks
+    cmds:
+      - "{{.BUN}} lint"
+
+  typecheck:
+    desc: Run repository typechecks
+    cmds:
+      - "{{.BUN}} typecheck"
+
+  check:
+    desc: Run the required validation gate
+    deps:
+      - lint
+      - typecheck
+
+  test:
+    desc: Run the full test suite
+    cmds:
+      - "{{.BUN}} run test"
+
+  test:web:
+    desc: Run web package tests
+    cmds:
+      - "{{.BUN}} run --cwd apps/web test"
+
+  test:web:browser:
+    desc: Run browser-based web tests
+    cmds:
+      - "{{.BUN}} run --cwd apps/web test:browser"
+
+  test:web:browser:install:
+    desc: Install Playwright browser dependencies for web browser tests
+    cmds:
+      - "{{.BUN}} run --cwd apps/web test:browser:install"
+
+  test:server:
+    desc: Run backend tests
+    cmds:
+      - "{{.BUN}} run --cwd apps/server test"
+
+  test:desktop-smoke:
+    desc: Run desktop smoke tests
+    cmds:
+      - "{{.BUN}} run test:desktop-smoke"
+
+  fmt:
+    desc: Format the repo with oxfmt
+    cmds:
+      - "{{.BUN}} run fmt"
+
+  clean:
+    desc: Remove build outputs and installed workspace dependencies
+    cmds:
+      - "{{.BUN}} run clean"
+
+  sync:vscode-icons:
+    desc: Refresh bundled VS Code icon assets
+    cmds:
+      - "{{.BUN}} run sync:vscode-icons"
+
+  mobile:sync:
+    desc: Sync the Capacitor iOS shell with the latest web build
+    cmds:
+      - "{{.BUN}} run --cwd apps/mobile cap:sync"
+
+  mobile:open:ios:
+    desc: Sync and open the iOS workspace in Xcode
+    cmds:
+      - "{{.BUN}} run --cwd apps/mobile cap:open:ios"
+
+  mobile:add:ios:
+    desc: Add the iOS Capacitor project
+    cmds:
+      - "{{.BUN}} run --cwd apps/mobile cap:add:ios"
+
+  release:desktop:artifact:
+    desc: Build desktop release artifacts for the host platform
+    cmds:
+      - "{{.BUN}} run dist:desktop:artifact"
+
+  release:desktop:dmg:
+    desc: Build the macOS DMG release artifact
+    cmds:
+      - "{{.BUN}} run dist:desktop:dmg"
+
+  release:desktop:dmg:arm64:
+    desc: Build the macOS arm64 DMG release artifact
+    cmds:
+      - "{{.BUN}} run dist:desktop:dmg:arm64"
+
+  release:desktop:dmg:x64:
+    desc: Build the macOS x64 DMG release artifact
+    cmds:
+      - "{{.BUN}} run dist:desktop:dmg:x64"
+
+  release:desktop:linux:
+    desc: Build the Linux AppImage desktop artifact
+    cmds:
+      - "{{.BUN}} run dist:desktop:linux"
+
+  release:desktop:win:
+    desc: Build the Windows NSIS desktop artifact
+    cmds:
+      - "{{.BUN}} run dist:desktop:win"
+
+  version:
+    desc: Show the current desktop release and iOS shell versions
+    cmds:
+      - "node scripts/version-manager.mjs get"
+
+  version:get:
+    desc: Show the current desktop release and iOS shell versions
+    cmds:
+      - "node scripts/version-manager.mjs get"
+
+  version:set:release:
+    desc: "Set the desktop release version (usage: task version:set:release VERSION=0.0.6)"
+    requires:
+      vars:
+        - VERSION
+    cmds:
+      - "node scripts/version-manager.mjs set-release {{.VERSION}}"
+
+  version:set:ios:
+    desc: "Set the iOS shell version (usage: task version:set:ios VERSION=0.0.14)"
+    requires:
+      vars:
+        - VERSION
+    cmds:
+      - "node scripts/version-manager.mjs set-ios {{.VERSION}}"

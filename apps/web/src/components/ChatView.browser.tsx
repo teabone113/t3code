@@ -208,6 +208,9 @@ function createSnapshotForTargetUser(options: {
         model: "gpt-5",
         interactionMode: "default",
         runtimeMode: "full-access",
+        agentRole: "standard",
+        parentThreadId: null,
+        supervisorState: null,
         branch: "main",
         worktreePath: null,
         latestTurn: null,
@@ -755,6 +758,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         [THREAD_ID]: {
           projectId: PROJECT_ID,
           createdAt: NOW_ISO,
+          agentRole: "standard",
           runtimeMode: "full-access",
           interactionMode: "default",
           branch: null,

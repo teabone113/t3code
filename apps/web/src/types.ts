@@ -1,8 +1,11 @@
 import type {
+  AgentRole,
   OrchestrationLatestTurn,
   OrchestrationProposedPlanId,
   OrchestrationSessionStatus,
+  SupervisorThreadState,
   OrchestrationThreadActivity,
+  ProjectContextSource,
   ProjectScript as ContractProjectScript,
   ThreadId,
   ProjectId,
@@ -44,6 +47,7 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   text: string;
   attachments?: ChatAttachment[];
+  projectContextSources?: ReadonlyArray<ProjectContextSource>;
   createdAt: string;
   completedAt?: string | undefined;
   streaming: boolean;
@@ -91,6 +95,9 @@ export interface Thread {
   model: string;
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
+  agentRole: AgentRole;
+  parentThreadId: ThreadId | null;
+  supervisorState: SupervisorThreadState | null;
   session: ThreadSession | null;
   messages: ChatMessage[];
   proposedPlans: ProposedPlan[];

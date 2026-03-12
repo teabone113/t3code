@@ -12,14 +12,24 @@ import {
   type FolderOpenTargetId as FolderOpenTargetIdValue,
   type EditorId as EditorIdValue,
   type ProviderKind,
+  type ProviderSessionStartInput,
   type ProviderServiceTier,
   type RemoteBackendProfile as RemoteBackendProfileValue,
 } from "@t3tools/contracts";
-import { getDefaultModel, getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
+import {
+  getDefaultModel,
+  getModelOptions,
+  getOpenCodeModelDisplayName,
+  normalizeModelSlug,
+} from "@t3tools/shared/model";
 
 const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 const MAX_CUSTOM_MODEL_COUNT = 32;
+const MAX_VISIBLE_OPENCODE_DELEGATE_COUNT = 64;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
+export const DEFAULT_SUPERVISOR_MAX_CONCURRENT_CHILDREN = 2;
+export const MIN_SUPERVISOR_MAX_CONCURRENT_CHILDREN = 1;
+export const MAX_SUPERVISOR_MAX_CONCURRENT_CHILDREN = 8;
 export const APP_FONT_SCALE_OPTIONS = [
   {
     value: "compact",
@@ -70,6 +80,7 @@ const AppServiceTierSchema = Schema.Literals(["auto", "fast", "flex"]);
 const MODELS_WITH_FAST_SUPPORT = new Set(["gpt-5.4"]);
 const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>> = {
   codex: new Set(getModelOptions("codex").map((option) => option.slug)),
+  opencode: new Set(getModelOptions("opencode").map((option) => option.slug)),
 };
 
 const AppSettingsSchema = Schema.Struct({
@@ -77,6 +88,13 @@ const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some("")),
   ),
   codexHomePath: Schema.String.check(Schema.isMaxLength(4096)).pipe(
+    Schema.withConstructorDefault(() => Option.some("")),
+  ),
+  opencodeBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(
+    Schema.withConstructorDefault(() => Option.some("")),
+  ),
+  jcodemunchEnabled: Schema.Boolean.pipe(Schema.withConstructorDefault(() => Option.some(false))),
+  jcodemunchBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(
     Schema.withConstructorDefault(() => Option.some("")),
   ),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withConstructorDefault(() => Option.some(true))),
@@ -98,6 +116,12 @@ const AppSettingsSchema = Schema.Struct({
   customCodexModels: Schema.Array(Schema.String).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
   ),
+  customOpenCodeModels: Schema.Array(Schema.String).pipe(
+    Schema.withConstructorDefault(() => Option.some([])),
+  ),
+  visibleOpenCodeDelegateIds: Schema.Array(Schema.String).pipe(
+    Schema.withConstructorDefault(() => Option.some(["openrouter"])),
+  ),
   remoteBackendProfiles: Schema.Array(RemoteBackendProfile).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
   ),
@@ -109,6 +133,12 @@ const AppSettingsSchema = Schema.Struct({
   ),
   defaultFolderOpenTool: Schema.NullOr(FolderOpenTargetId).pipe(
     Schema.withConstructorDefault(() => Option.some(null)),
+  ),
+  defaultSupervisorChildModel: Schema.NullOr(Schema.String).pipe(
+    Schema.withConstructorDefault(() => Option.some(null)),
+  ),
+  defaultSupervisorMaxConcurrentChildren: Schema.Number.pipe(
+    Schema.withConstructorDefault(() => Option.some(DEFAULT_SUPERVISOR_MAX_CONCURRENT_CHILDREN)),
   ),
   backendSelection: BackendSelection.pipe(
     Schema.withConstructorDefault(() => Option.some(BackendSelection.makeUnsafe({}))),
@@ -123,6 +153,45 @@ export interface AppModelOption {
 
 export function resolveAppServiceTier(serviceTier: AppServiceTier): ProviderServiceTier | null {
   return serviceTier === "auto" ? null : serviceTier;
+}
+
+export function getProviderStartOptionsForProvider(
+  settings: Pick<AppSettings, "codexBinaryPath" | "codexHomePath" | "opencodeBinaryPath">,
+  provider: ProviderKind,
+): ProviderSessionStartInput["providerOptions"] | undefined {
+  if (provider === "codex") {
+    const binaryPath = settings.codexBinaryPath.trim();
+    const homePath = settings.codexHomePath.trim();
+    if (!binaryPath && !homePath) {
+      return undefined;
+    }
+    return {
+      codex: {
+        ...(binaryPath ? { binaryPath } : {}),
+        ...(homePath ? { homePath } : {}),
+      },
+    };
+  }
+
+  const binaryPath = settings.opencodeBinaryPath.trim();
+  if (!binaryPath) {
+    return undefined;
+  }
+  return {
+    opencode: {
+      binaryPath,
+    },
+  };
+}
+
+export function getJCodeMunchSettings(
+  settings: Pick<AppSettings, "jcodemunchEnabled" | "jcodemunchBinaryPath">,
+) {
+  const binaryPath = settings.jcodemunchBinaryPath.trim();
+  return {
+    enabled: settings.jcodemunchEnabled,
+    binaryPath: binaryPath.length > 0 ? binaryPath : null,
+  } as const;
 }
 
 export function resolveAppFontScale(scale: AppFontScale): number {
@@ -185,14 +254,44 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
   return {
     ...settings,
     customCodexModels: normalizeCustomModelSlugs(settings.customCodexModels, "codex"),
+    customOpenCodeModels: normalizeCustomModelSlugs(settings.customOpenCodeModels, "opencode"),
+    visibleOpenCodeDelegateIds: normalizeOpenCodeDelegateIds(settings.visibleOpenCodeDelegateIds),
     remoteBackendProfiles,
     preferredGitRemotesByProjectCwd: normalizePreferredGitRemotesByProjectCwd(
       settings.preferredGitRemotesByProjectCwd,
     ),
     defaultFileOpenTool: normalizeOptionalFileOpenTool(settings.defaultFileOpenTool),
     defaultFolderOpenTool: normalizeOptionalFolderOpenTool(settings.defaultFolderOpenTool),
+    defaultSupervisorChildModel: normalizeOptionalSupervisorChildModel(
+      settings.defaultSupervisorChildModel,
+      settings.customCodexModels,
+    ),
+    defaultSupervisorMaxConcurrentChildren: normalizeSupervisorMaxConcurrentChildren(
+      settings.defaultSupervisorMaxConcurrentChildren,
+    ),
     backendSelection,
   };
+}
+
+function normalizeOpenCodeDelegateIds(
+  input: Iterable<string | null | undefined> | null | undefined,
+): string[] {
+  const normalizedIds: string[] = [];
+  const seen = new Set<string>();
+
+  for (const candidate of input ?? []) {
+    const normalized = candidate?.trim() ?? "";
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    normalizedIds.push(normalized);
+    if (normalizedIds.length >= MAX_VISIBLE_OPENCODE_DELEGATE_COUNT) {
+      break;
+    }
+  }
+
+  return normalizedIds;
 }
 
 function normalizePreferredGitRemotesByProjectCwd(
@@ -233,6 +332,31 @@ function normalizeOptionalFolderOpenTool(
   }
   const decoded = Schema.decodeUnknownOption(FolderOpenTargetId)(tool);
   return decoded._tag === "Some" ? decoded.value : null;
+}
+
+function normalizeOptionalSupervisorChildModel(
+  model: string | null | undefined,
+  customModels: readonly string[],
+): string | null {
+  if (model == null) {
+    return null;
+  }
+  const normalized = model.trim();
+  if (!normalized) {
+    return null;
+  }
+  return resolveAppModelSelection("codex", customModels, normalized);
+}
+
+function normalizeSupervisorMaxConcurrentChildren(value: number | null | undefined): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_SUPERVISOR_MAX_CONCURRENT_CHILDREN;
+  }
+  const finiteValue = value as number;
+  return Math.min(
+    MAX_SUPERVISOR_MAX_CONCURRENT_CHILDREN,
+    Math.max(MIN_SUPERVISOR_MAX_CONCURRENT_CHILDREN, Math.round(finiteValue)),
+  );
 }
 
 export function normalizeRemoteBackendProfiles(
@@ -314,12 +438,20 @@ export function getAppModelOptions(
   provider: ProviderKind,
   customModels: readonly string[],
   selectedModel?: string | null,
+  additionalOptions: ReadonlyArray<{ slug: string; name: string }> = [],
 ): AppModelOption[] {
-  const options: AppModelOption[] = getModelOptions(provider).map(({ slug, name }) => ({
-    slug,
-    name,
-    isCustom: false,
-  }));
+  const options: AppModelOption[] = [
+    ...getModelOptions(provider).map(({ slug, name }) => ({
+      slug,
+      name,
+      isCustom: false,
+    })),
+    ...additionalOptions.map(({ slug, name }) => ({
+      slug,
+      name,
+      isCustom: false,
+    })),
+  ];
   const seen = new Set(options.map((option) => option.slug));
 
   for (const slug of normalizeCustomModelSlugs(customModels, provider)) {
@@ -330,7 +462,7 @@ export function getAppModelOptions(
     seen.add(slug);
     options.push({
       slug,
-      name: slug,
+      name: provider === "opencode" ? getOpenCodeModelDisplayName(slug) : slug,
       isCustom: true,
     });
   }
@@ -339,7 +471,10 @@ export function getAppModelOptions(
   if (normalizedSelectedModel && !seen.has(normalizedSelectedModel)) {
     options.push({
       slug: normalizedSelectedModel,
-      name: normalizedSelectedModel,
+      name:
+        provider === "opencode"
+          ? getOpenCodeModelDisplayName(normalizedSelectedModel)
+          : normalizedSelectedModel,
       isCustom: true,
     });
   }
@@ -351,8 +486,9 @@ export function resolveAppModelSelection(
   provider: ProviderKind,
   customModels: readonly string[],
   selectedModel: string | null | undefined,
+  additionalOptions: ReadonlyArray<{ slug: string; name: string }> = [],
 ): string {
-  const options = getAppModelOptions(provider, customModels, selectedModel);
+  const options = getAppModelOptions(provider, customModels, selectedModel, additionalOptions);
   const trimmedSelectedModel = selectedModel?.trim();
   if (trimmedSelectedModel) {
     const direct = options.find((option) => option.slug === trimmedSelectedModel);
@@ -384,9 +520,10 @@ export function getSlashModelOptions(
   customModels: readonly string[],
   query: string,
   selectedModel?: string | null,
+  additionalOptions: ReadonlyArray<{ slug: string; name: string }> = [],
 ): AppModelOption[] {
   const normalizedQuery = query.trim().toLowerCase();
-  const options = getAppModelOptions(provider, customModels, selectedModel);
+  const options = getAppModelOptions(provider, customModels, selectedModel, additionalOptions);
   if (!normalizedQuery) {
     return options;
   }

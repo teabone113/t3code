@@ -15,13 +15,18 @@ import {
   ProjectMetaUpdatedPayload,
   ThreadActivityAppendedPayload,
   ThreadCreatedPayload,
+  ThreadChildTakenOverPayload,
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
+  ThreadMultiAgentConfiguredPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
+  ThreadSupervisorPlanGenerationRequestedPayload,
+  ThreadSupervisorPlanApprovedPayload,
+  ThreadSupervisorPlanRejectedPayload,
   ThreadTurnDiffCompletedPayload,
 } from "./Schemas.ts";
 
@@ -255,6 +260,9 @@ export function projectEvent(
             model: payload.model,
             runtimeMode: payload.runtimeMode,
             interactionMode: payload.interactionMode,
+            agentRole: payload.agentRole,
+            parentThreadId: payload.parentThreadId,
+            supervisorState: payload.supervisorState,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
             latestTurn: null,
@@ -262,6 +270,7 @@ export function projectEvent(
             updatedAt: payload.updatedAt,
             deletedAt: null,
             messages: [],
+            proposedPlans: [],
             activities: [],
             checkpoints: [],
             session: null,
@@ -330,6 +339,88 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             interactionMode: payload.interactionMode,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.multi-agent-configured":
+      return decodeForEvent(
+        ThreadMultiAgentConfiguredPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            supervisorState: payload.supervisorState,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.supervisor-plan-generation-requested":
+      return decodeForEvent(
+        ThreadSupervisorPlanGenerationRequestedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            supervisorState:
+              nextBase.threads.find((thread) => thread.id === payload.threadId)?.supervisorState ??
+              null,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.supervisor-plan-approved":
+      return decodeForEvent(
+        ThreadSupervisorPlanApprovedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            supervisorState:
+              nextBase.threads.find((thread) => thread.id === payload.threadId)?.supervisorState ??
+              null,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.supervisor-plan-rejected":
+      return decodeForEvent(
+        ThreadSupervisorPlanRejectedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            supervisorState:
+              nextBase.threads.find((thread) => thread.id === payload.threadId)?.supervisorState ??
+              null,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.child-taken-over":
+      return decodeForEvent(ThreadChildTakenOverPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            agentRole: "standard",
+            parentThreadId: null,
             updatedAt: payload.updatedAt,
           }),
         })),

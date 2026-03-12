@@ -425,6 +425,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             model: event.payload.model,
             runtimeMode: event.payload.runtimeMode,
             interactionMode: event.payload.interactionMode,
+            agentRole: event.payload.agentRole,
+            parentThreadId: event.payload.parentThreadId,
+            supervisorState: event.payload.supervisorState,
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
             latestTurnId: null,
@@ -479,6 +482,52 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             interactionMode: event.payload.interactionMode,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.multi-agent-configured": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            supervisorState: event.payload.supervisorState,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.supervisor-plan-approved":
+        case "thread.supervisor-plan-rejected": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.child-taken-over": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            agentRole: "standard",
+            parentThreadId: null,
             updatedAt: event.payload.updatedAt,
           });
           return;

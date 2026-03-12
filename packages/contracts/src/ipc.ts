@@ -15,12 +15,22 @@ import type {
   GitStatusResult,
 } from "./git";
 import type {
+  ProjectBuildContextInput,
+  ProjectBuildContextResult,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
   ProjectWriteFileInput,
   ProjectWriteFileResult,
 } from "./project";
 import type { ServerConfig } from "./server";
+import type {
+  ProviderCatalog,
+  ProviderCatalogQuery,
+  ProviderCompleteOauthInput,
+  ProviderSetApiKeyAuthInput,
+  ProviderStartOauthInput,
+  ProviderStartOauthResult,
+} from "./providerAdmin";
 import type {
   TerminalClearInput,
   TerminalCloseInput,
@@ -127,6 +137,7 @@ export interface NativeApi {
   projects: {
     searchEntries: (input: ProjectSearchEntriesInput) => Promise<ProjectSearchEntriesResult>;
     writeFile: (input: ProjectWriteFileInput) => Promise<ProjectWriteFileResult>;
+    buildContext: (input: ProjectBuildContextInput) => Promise<ProjectBuildContextResult>;
   };
   shell: {
     openInEditor: (cwd: string, editor: EditorId) => Promise<void>;
@@ -156,6 +167,12 @@ export interface NativeApi {
   server: {
     getConfig: () => Promise<ServerConfig>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
+  };
+  provider: {
+    getCatalog: (input: ProviderCatalogQuery) => Promise<ProviderCatalog>;
+    setApiKeyAuth: (input: ProviderSetApiKeyAuthInput) => Promise<boolean>;
+    startOauth: (input: ProviderStartOauthInput) => Promise<ProviderStartOauthResult>;
+    completeOauth: (input: ProviderCompleteOauthInput) => Promise<boolean>;
   };
   orchestration: {
     getSnapshot: () => Promise<OrchestrationReadModel>;

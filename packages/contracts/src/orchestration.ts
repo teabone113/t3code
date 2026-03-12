@@ -1,5 +1,6 @@
 import { Option, Schema, SchemaIssue, Struct } from "effect";
 import { ProviderModelOptions } from "./model";
+import { ProviderStartOptions } from "./providerOptions";
 import {
   ApprovalRequestId,
   CheckpointRef,
@@ -8,6 +9,7 @@ import {
   IsoDateTime,
   MessageId,
   NonNegativeInt,
+  PositiveInt,
   ProjectId,
   ProviderItemId,
   ThreadId,
@@ -28,7 +30,7 @@ export const ORCHESTRATION_WS_CHANNELS = {
   domainEvent: "orchestration.domainEvent",
 } as const;
 
-export const ProviderKind = Schema.Literal("codex");
+export const ProviderKind = Schema.Literals(["codex", "opencode"]);
 export type ProviderKind = typeof ProviderKind.Type;
 export const ProviderApprovalPolicy = Schema.Literals([
   "untrusted",
@@ -49,7 +51,7 @@ export const DEFAULT_PROVIDER_KIND: ProviderKind = "codex";
 export const RuntimeMode = Schema.Literals(["approval-required", "full-access"]);
 export type RuntimeMode = typeof RuntimeMode.Type;
 export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
-export const ProviderInteractionMode = Schema.Literals(["default", "plan"]);
+export const ProviderInteractionMode = Schema.Literals(["default", "plan", "agent-plan"]);
 export type ProviderInteractionMode = typeof ProviderInteractionMode.Type;
 export const DEFAULT_PROVIDER_INTERACTION_MODE: ProviderInteractionMode = "default";
 export const ProviderRequestKind = Schema.Literals(["command", "file-read", "file-change"]);
@@ -69,6 +71,7 @@ export type ProviderUserInputAnswers = typeof ProviderUserInputAnswers.Type;
 export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 8;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const PROJECT_CONTEXT_MAX_CHARS = 16_384;
 const PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS = 14_000_000;
 const CHAT_ATTACHMENT_ID_MAX_CHARS = 128;
 // Correlation id is command id by design in this model.
@@ -246,6 +249,56 @@ export const OrchestrationLatestTurn = Schema.Struct({
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
+export const AgentRole = Schema.Literals(["standard", "supervisor", "sub-agent"]);
+export type AgentRole = typeof AgentRole.Type;
+
+export const SupervisorLifecycleState = Schema.Literals([
+  "drafting_plan",
+  "structuring_execution_plan",
+  "awaiting_plan_approval",
+  "executing_children",
+  "reviewing_children",
+  "completed",
+]);
+export type SupervisorLifecycleState = typeof SupervisorLifecycleState.Type;
+
+export const SupervisorDelegationStatus = Schema.Literals([
+  "queued",
+  "running",
+  "blocked",
+  "completed",
+  "failed",
+  "cancelled",
+]);
+export type SupervisorDelegationStatus = typeof SupervisorDelegationStatus.Type;
+
+export const SupervisorDelegation = Schema.Struct({
+  delegationId: TrimmedNonEmptyString,
+  childThreadId: ThreadId,
+  title: TrimmedNonEmptyString,
+  prompt: TrimmedNonEmptyString,
+  expectedOutput: Schema.NullOr(TrimmedNonEmptyString),
+  reviewInstructions: Schema.NullOr(TrimmedNonEmptyString),
+  writeAccess: Schema.Boolean,
+  status: SupervisorDelegationStatus,
+});
+export type SupervisorDelegation = typeof SupervisorDelegation.Type;
+
+export const SupervisorThreadState = Schema.Struct({
+  maxConcurrentChildren: PositiveInt,
+  childModel: Schema.NullOr(TrimmedNonEmptyString),
+  lifecycleState: SupervisorLifecycleState,
+  activePlanId: Schema.NullOr(OrchestrationProposedPlanId),
+  sourcePlanId: Schema.NullOr(OrchestrationProposedPlanId).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  structuringError: Schema.NullOr(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  delegations: Schema.Array(SupervisorDelegation),
+});
+export type SupervisorThreadState = typeof SupervisorThreadState.Type;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
@@ -254,6 +307,11 @@ export const OrchestrationThread = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(() => DEFAULT_PROVIDER_INTERACTION_MODE),
+  ),
+  agentRole: AgentRole.pipe(Schema.withDecodingDefault(() => "standard")),
+  parentThreadId: Schema.NullOr(ThreadId).pipe(Schema.withDecodingDefault(() => null)),
+  supervisorState: Schema.NullOr(SupervisorThreadState).pipe(
+    Schema.withDecodingDefault(() => null),
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
@@ -316,6 +374,11 @@ const ThreadCreateCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(() => DEFAULT_PROVIDER_INTERACTION_MODE),
   ),
+  agentRole: AgentRole.pipe(Schema.withDecodingDefault(() => "standard")),
+  parentThreadId: Schema.NullOr(ThreadId).pipe(Schema.withDecodingDefault(() => null)),
+  supervisorState: Schema.NullOr(SupervisorThreadState).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
@@ -353,6 +416,45 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadMultiAgentConfigureCommand = Schema.Struct({
+  type: Schema.Literal("thread.multi-agent.configure"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  supervisorState: SupervisorThreadState,
+  createdAt: IsoDateTime,
+});
+
+const ThreadSupervisorPlanApproveCommand = Schema.Struct({
+  type: Schema.Literal("thread.supervisor-plan.approve"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  planId: OrchestrationProposedPlanId,
+  createdAt: IsoDateTime,
+});
+
+const ThreadSupervisorPlanGenerateCommand = Schema.Struct({
+  type: Schema.Literal("thread.supervisor-plan.generate"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  sourcePlanId: OrchestrationProposedPlanId,
+  createdAt: IsoDateTime,
+});
+
+const ThreadSupervisorPlanRejectCommand = Schema.Struct({
+  type: Schema.Literal("thread.supervisor-plan.reject"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  planId: OrchestrationProposedPlanId,
+  createdAt: IsoDateTime,
+});
+
+const ThreadChildTakeoverCommand = Schema.Struct({
+  type: Schema.Literal("thread.child.takeover"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  createdAt: IsoDateTime,
+});
+
 export const ThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,
@@ -367,6 +469,13 @@ export const ThreadTurnStartCommand = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyString),
   serviceTier: Schema.optional(Schema.NullOr(ProviderServiceTier)),
   modelOptions: Schema.optional(ProviderModelOptions),
+  providerOptions: Schema.optional(ProviderStartOptions),
+  projectContext: Schema.optional(
+    Schema.String.check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(PROJECT_CONTEXT_MAX_CHARS),
+    ),
+  ),
   assistantDeliveryMode: Schema.optional(AssistantDeliveryMode),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(() => DEFAULT_RUNTIME_MODE)),
   interactionMode: ProviderInteractionMode.pipe(
@@ -389,6 +498,13 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyString),
   serviceTier: Schema.optional(Schema.NullOr(ProviderServiceTier)),
   modelOptions: Schema.optional(ProviderModelOptions),
+  providerOptions: Schema.optional(ProviderStartOptions),
+  projectContext: Schema.optional(
+    Schema.String.check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(PROJECT_CONTEXT_MAX_CHARS),
+    ),
+  ),
   assistantDeliveryMode: Schema.optional(AssistantDeliveryMode),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
@@ -445,6 +561,11 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
+  ThreadMultiAgentConfigureCommand,
+  ThreadSupervisorPlanGenerateCommand,
+  ThreadSupervisorPlanApproveCommand,
+  ThreadSupervisorPlanRejectCommand,
+  ThreadChildTakeoverCommand,
   ThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
@@ -464,6 +585,11 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
+  ThreadMultiAgentConfigureCommand,
+  ThreadSupervisorPlanGenerateCommand,
+  ThreadSupervisorPlanApproveCommand,
+  ThreadSupervisorPlanRejectCommand,
+  ThreadChildTakeoverCommand,
   ClientThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
@@ -564,6 +690,11 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.meta-updated",
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
+  "thread.multi-agent-configured",
+  "thread.supervisor-plan-generation-requested",
+  "thread.supervisor-plan-approved",
+  "thread.supervisor-plan-rejected",
+  "thread.child-taken-over",
   "thread.message-sent",
   "thread.turn-start-requested",
   "thread.turn-interrupt-requested",
@@ -616,6 +747,11 @@ export const ThreadCreatedPayload = Schema.Struct({
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(() => DEFAULT_PROVIDER_INTERACTION_MODE),
   ),
+  agentRole: AgentRole.pipe(Schema.withDecodingDefault(() => "standard")),
+  parentThreadId: Schema.NullOr(ThreadId).pipe(Schema.withDecodingDefault(() => null)),
+  supervisorState: Schema.NullOr(SupervisorThreadState).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
@@ -650,6 +786,35 @@ export const ThreadInteractionModeSetPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
+export const ThreadMultiAgentConfiguredPayload = Schema.Struct({
+  threadId: ThreadId,
+  supervisorState: SupervisorThreadState,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadSupervisorPlanApprovedPayload = Schema.Struct({
+  threadId: ThreadId,
+  planId: OrchestrationProposedPlanId,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadSupervisorPlanGenerationRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  sourcePlanId: OrchestrationProposedPlanId,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadSupervisorPlanRejectedPayload = Schema.Struct({
+  threadId: ThreadId,
+  planId: OrchestrationProposedPlanId,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadChildTakenOverPayload = Schema.Struct({
+  threadId: ThreadId,
+  updatedAt: IsoDateTime,
+});
+
 export const ThreadMessageSentPayload = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
@@ -669,6 +834,13 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyString),
   serviceTier: Schema.optional(Schema.NullOr(ProviderServiceTier)),
   modelOptions: Schema.optional(ProviderModelOptions),
+  providerOptions: Schema.optional(ProviderStartOptions),
+  projectContext: Schema.optional(
+    Schema.String.check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(PROJECT_CONTEXT_MAX_CHARS),
+    ),
+  ),
   assistantDeliveryMode: Schema.optional(AssistantDeliveryMode),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(() => DEFAULT_RUNTIME_MODE)),
   interactionMode: ProviderInteractionMode.pipe(
@@ -817,6 +989,31 @@ export const OrchestrationEvent = Schema.Union([
   }),
   Schema.Struct({
     ...EventBaseFields,
+    type: Schema.Literal("thread.multi-agent-configured"),
+    payload: ThreadMultiAgentConfiguredPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.supervisor-plan-generation-requested"),
+    payload: ThreadSupervisorPlanGenerationRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.supervisor-plan-approved"),
+    payload: ThreadSupervisorPlanApprovedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.supervisor-plan-rejected"),
+    payload: ThreadSupervisorPlanRejectedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.child-taken-over"),
+    payload: ThreadChildTakenOverPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
     type: Schema.Literal("thread.message-sent"),
     payload: ThreadMessageSentPayload,
   }),
@@ -918,6 +1115,31 @@ export const OrchestrationPersistedEvent = Schema.Union([
     ...PersistedEventBaseFields,
     eventType: Schema.Literal("thread.interaction-mode-set"),
     payload: ThreadInteractionModeSetPayload,
+  }),
+  Schema.Struct({
+    ...PersistedEventBaseFields,
+    eventType: Schema.Literal("thread.multi-agent-configured"),
+    payload: ThreadMultiAgentConfiguredPayload,
+  }),
+  Schema.Struct({
+    ...PersistedEventBaseFields,
+    eventType: Schema.Literal("thread.supervisor-plan-generation-requested"),
+    payload: ThreadSupervisorPlanGenerationRequestedPayload,
+  }),
+  Schema.Struct({
+    ...PersistedEventBaseFields,
+    eventType: Schema.Literal("thread.supervisor-plan-approved"),
+    payload: ThreadSupervisorPlanApprovedPayload,
+  }),
+  Schema.Struct({
+    ...PersistedEventBaseFields,
+    eventType: Schema.Literal("thread.supervisor-plan-rejected"),
+    payload: ThreadSupervisorPlanRejectedPayload,
+  }),
+  Schema.Struct({
+    ...PersistedEventBaseFields,
+    eventType: Schema.Literal("thread.child-taken-over"),
+    payload: ThreadChildTakenOverPayload,
   }),
   Schema.Struct({
     ...PersistedEventBaseFields,
@@ -1061,6 +1283,12 @@ export const OrchestrationSteerTurnInput = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyString),
   serviceTier: Schema.optional(Schema.NullOr(ProviderServiceTier)),
   modelOptions: Schema.optional(ProviderModelOptions),
+  projectContext: Schema.optional(
+    Schema.String.check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(PROJECT_CONTEXT_MAX_CHARS),
+    ),
+  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(() => DEFAULT_PROVIDER_INTERACTION_MODE),
   ),

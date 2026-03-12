@@ -6,8 +6,9 @@ import {
   Settings2Icon,
   SquarePenIcon,
   TerminalIcon,
+  UsersIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_RUNTIME_MODE,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -21,7 +22,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useAppSettings } from "../appSettings";
 import { isCapacitorShell, isElectron } from "../env";
-import { APP_RELEASE_VERSION, IOS_SHELL_VERSION } from "../branding";
+import { APP_RELEASE_VERSION, IOS_SHELL_VERSION, formatStageVersionTag } from "../branding";
 import { resolveBackendConnection } from "../backendConnection";
 import { newCommandId, newProjectId, newThreadId } from "../lib/utils";
 import { useStore } from "../store";
@@ -366,6 +367,7 @@ export default function Sidebar() {
     (
       projectId: ProjectId,
       options?: {
+        agentRole?: "standard" | "supervisor";
         branch?: string | null;
         worktreePath?: string | null;
         envMode?: DraftThreadEnvMode;
@@ -382,13 +384,14 @@ export default function Sidebar() {
               ...(hasBranchOption ? { branch: options?.branch ?? null } : {}),
               ...(hasWorktreePathOption ? { worktreePath: options?.worktreePath ?? null } : {}),
               ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
+              ...(options?.agentRole ? { agentRole: options.agentRole } : {}),
             });
           }
           setProjectDraftThreadId(projectId, storedDraftThread.threadId);
           if (routeThreadId === storedDraftThread.threadId) {
             return;
           }
-          await navigate({
+          void navigate({
             to: "/$threadId",
             params: { threadId: storedDraftThread.threadId },
           });
@@ -403,6 +406,7 @@ export default function Sidebar() {
             ...(hasBranchOption ? { branch: options?.branch ?? null } : {}),
             ...(hasWorktreePathOption ? { worktreePath: options?.worktreePath ?? null } : {}),
             ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
+            ...(options?.agentRole ? { agentRole: options.agentRole } : {}),
           });
         }
         setProjectDraftThreadId(projectId, routeThreadId);
@@ -413,13 +417,14 @@ export default function Sidebar() {
       return (async () => {
         setProjectDraftThreadId(projectId, threadId, {
           createdAt,
+          agentRole: options?.agentRole ?? "standard",
           branch: options?.branch ?? null,
           worktreePath: options?.worktreePath ?? null,
           envMode: options?.envMode ?? "local",
           runtimeMode: DEFAULT_RUNTIME_MODE,
         });
 
-        await navigate({
+        void navigate({
           to: "/$threadId",
           params: { threadId },
         });
@@ -471,6 +476,10 @@ export default function Sidebar() {
 
       const existing = projects.find((project) => project.cwd === cwd);
       if (existing) {
+        console.info("[add-project] project already exists", {
+          cwd,
+          projectId: existing.id,
+        });
         focusMostRecentThreadForProject(existing.id);
         finishAddingProject();
         return;
@@ -480,6 +489,13 @@ export default function Sidebar() {
       const createdAt = new Date().toISOString();
       const title = cwd.split(/[/\\]/).findLast(isNonEmptyString) ?? cwd;
       try {
+        console.info("[add-project] dispatching project.create", {
+          commandType: "project.create",
+          createdAt,
+          cwd,
+          projectId,
+          title,
+        });
         await api.orchestration.dispatchCommand({
           type: "project.create",
           commandId: newCommandId(),
@@ -489,18 +505,30 @@ export default function Sidebar() {
           defaultModel: DEFAULT_MODEL_BY_PROVIDER.codex,
           createdAt,
         });
-        await handleNewThread(projectId).catch(() => undefined);
+        console.info("[add-project] project.create resolved", {
+          cwd,
+          projectId,
+        });
+        void handleNewThread(projectId).catch(() => undefined);
+        console.info("[add-project] scheduled draft thread navigation", {
+          cwd,
+          projectId,
+        });
       } catch (error) {
-        setIsAddingProject(false);
+        console.error("[add-project] project.create failed", {
+          cwd,
+          error,
+          projectId,
+        });
         toastManager.add({
           type: "error",
           title: "Unable to add project",
           description:
             error instanceof Error ? error.message : "An error occurred while adding the project.",
         });
-        return;
+      } finally {
+        finishAddingProject();
       }
-      finishAddingProject();
     },
     [focusMostRecentThreadForProject, handleNewThread, isAddingProject, projects],
   );
@@ -733,9 +761,16 @@ export default function Sidebar() {
       const api = readNativeApi();
       if (!api) return;
       const clicked = await api.contextMenu.show(
-        [{ id: "delete", label: "Delete", destructive: true }],
+        [
+          { id: "new-supervisor", label: "New supervisor thread" },
+          { id: "delete", label: "Delete", destructive: true },
+        ],
         position,
       );
+      if (clicked === "new-supervisor") {
+        await handleNewThread(projectId, { agentRole: "supervisor" });
+        return;
+      }
       if (clicked !== "delete") return;
 
       const project = projects.find((entry) => entry.id === projectId);
@@ -781,6 +816,7 @@ export default function Sidebar() {
       clearComposerDraftForThread,
       clearProjectDraftThreadId,
       getDraftThreadByProjectId,
+      handleNewThread,
       projects,
       threads,
     ],
@@ -965,7 +1001,7 @@ export default function Sidebar() {
             {isCompactPhoneShell ? "Code iPhone" : "Code iPad"}
           </span>
           <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium tracking-[0.18em] text-muted-foreground/60">
-            {`v ${IOS_SHELL_VERSION}`}
+            {formatStageVersionTag(IOS_SHELL_VERSION)}
           </span>
         </div>
       ) : (
@@ -975,7 +1011,7 @@ export default function Sidebar() {
             Code
           </span>
           <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium tracking-[0.18em] text-muted-foreground/60">
-            {`v ${APP_RELEASE_VERSION}`}
+            {formatStageVersionTag(APP_RELEASE_VERSION)}
           </span>
         </div>
       )}
@@ -1026,12 +1062,20 @@ export default function Sidebar() {
                   if (byDate !== 0) return byDate;
                   return b.id.localeCompare(a.id);
                 });
+              const childThreadsByParentId = new Map<ThreadId, Thread[]>();
+              for (const thread of projectThreads) {
+                if (!thread.parentThreadId) continue;
+                const entries = childThreadsByParentId.get(thread.parentThreadId) ?? [];
+                entries.push(thread);
+                childThreadsByParentId.set(thread.parentThreadId, entries);
+              }
+              const topLevelThreads = projectThreads.filter((thread) => thread.parentThreadId === null);
               const isThreadListExpanded = expandedThreadListsByProject.has(project.id);
-              const hasHiddenThreads = projectThreads.length > THREAD_PREVIEW_LIMIT;
+              const hasHiddenThreads = topLevelThreads.length > THREAD_PREVIEW_LIMIT;
               const visibleThreads =
                 hasHiddenThreads && !isThreadListExpanded
-                  ? projectThreads.slice(0, THREAD_PREVIEW_LIMIT)
-                  : projectThreads;
+                  ? topLevelThreads.slice(0, THREAD_PREVIEW_LIMIT)
+                  : topLevelThreads;
 
               return (
                 <Collapsible
@@ -1077,6 +1121,30 @@ export default function Sidebar() {
                               render={
                                 <button
                                   type="button"
+                                  aria-label={`Create supervisor thread in ${project.name}`}
+                                />
+                              }
+                              showOnHover
+                              className="top-1 right-7 size-5 rounded-md p-0 text-muted-foreground/70 hover:bg-secondary hover:text-foreground"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                void handleNewThread(project.id, { agentRole: "supervisor" });
+                              }}
+                            >
+                              <UsersIcon className="size-3.5" />
+                            </SidebarMenuAction>
+                          }
+                        />
+                        <TooltipPopup side="top">New supervisor thread</TooltipPopup>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <SidebarMenuAction
+                              render={
+                                <button
+                                  type="button"
                                   aria-label={`Create new thread in ${project.name}`}
                                 />
                               }
@@ -1104,6 +1172,7 @@ export default function Sidebar() {
                       <SidebarMenuSub className="mx-1 my-0 w-full translate-x-0 gap-0 px-1.5 py-0">
                         {visibleThreads.map((thread) => {
                           const isActive = routeThreadId === thread.id;
+                          const childThreads = childThreadsByParentId.get(thread.id) ?? [];
                           const threadStatus = threadStatusPill(
                             thread,
                             pendingApprovalByThreadId.get(thread.id) === true,
@@ -1115,130 +1184,159 @@ export default function Sidebar() {
                           );
 
                           return (
-                            <SidebarMenuSubItem key={thread.id} className="w-full">
-                              <SidebarMenuSubButton
-                                render={<div role="button" tabIndex={0} />}
-                                size="sm"
-                                isActive={isActive}
-                                className={`h-7 w-full translate-x-0 cursor-default justify-start px-2 text-left hover:bg-accent hover:text-foreground ${
-                                  isActive
-                                    ? "bg-accent/85 text-foreground font-medium ring-1 ring-border/70 dark:bg-accent/55 dark:ring-border/50"
-                                    : "text-muted-foreground"
-                                }`}
-                                onClick={() => {
-                                  void navigate({
-                                    to: "/$threadId",
-                                    params: { threadId: thread.id },
-                                  });
-                                }}
-                                onKeyDown={(event) => {
-                                  if (event.key !== "Enter" && event.key !== " ") return;
-                                  event.preventDefault();
-                                  void navigate({
-                                    to: "/$threadId",
-                                    params: { threadId: thread.id },
-                                  });
-                                }}
-                                onContextMenu={(event) => {
-                                  event.preventDefault();
-                                  void handleThreadContextMenu(thread.id, {
-                                    x: event.clientX,
-                                    y: event.clientY,
-                                  });
-                                }}
-                              >
-                                <div className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
-                                  {prStatus && (
-                                    <Tooltip>
-                                      <TooltipTrigger
-                                        render={
-                                          <button
-                                            type="button"
-                                            aria-label={prStatus.tooltip}
-                                            className={`inline-flex items-center justify-center ${prStatus.colorClass} cursor-pointer rounded-sm outline-hidden focus-visible:ring-1 focus-visible:ring-ring`}
-                                            onClick={(event) => {
-                                              openPrLink(event, prStatus.url);
-                                            }}
-                                          >
-                                            <GitPullRequestIcon className="size-3" />
-                                          </button>
-                                        }
-                                      />
-                                      <TooltipPopup side="top">{prStatus.tooltip}</TooltipPopup>
-                                    </Tooltip>
-                                  )}
-                                  {threadStatus && (
-                                    <span
-                                      className={`inline-flex items-center gap-1 text-[10px] ${threadStatus.colorClass}`}
-                                    >
+                            <Fragment key={thread.id}>
+                              <SidebarMenuSubItem className="w-full">
+                                <SidebarMenuSubButton
+                                  render={<div role="button" tabIndex={0} />}
+                                  size="sm"
+                                  isActive={isActive}
+                                  className={`h-7 w-full translate-x-0 cursor-default justify-start px-2 text-left hover:bg-accent hover:text-foreground ${
+                                    isActive
+                                      ? "bg-accent/85 text-foreground font-medium ring-1 ring-border/70 dark:bg-accent/55 dark:ring-border/50"
+                                      : "text-muted-foreground"
+                                  }`}
+                                  onClick={() => {
+                                    void navigate({
+                                      to: "/$threadId",
+                                      params: { threadId: thread.id },
+                                    });
+                                  }}
+                                  onKeyDown={(event) => {
+                                    if (event.key !== "Enter" && event.key !== " ") return;
+                                    event.preventDefault();
+                                    void navigate({
+                                      to: "/$threadId",
+                                      params: { threadId: thread.id },
+                                    });
+                                  }}
+                                  onContextMenu={(event) => {
+                                    event.preventDefault();
+                                    void handleThreadContextMenu(thread.id, {
+                                      x: event.clientX,
+                                      y: event.clientY,
+                                    });
+                                  }}
+                                >
+                                  <div className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
+                                    {prStatus && (
+                                      <Tooltip>
+                                        <TooltipTrigger
+                                          render={
+                                            <button
+                                              type="button"
+                                              aria-label={prStatus.tooltip}
+                                              className={`inline-flex items-center justify-center ${prStatus.colorClass} cursor-pointer rounded-sm outline-hidden focus-visible:ring-1 focus-visible:ring-ring`}
+                                              onClick={(event) => {
+                                                openPrLink(event, prStatus.url);
+                                              }}
+                                            >
+                                              <GitPullRequestIcon className="size-3" />
+                                            </button>
+                                          }
+                                        />
+                                        <TooltipPopup side="top">{prStatus.tooltip}</TooltipPopup>
+                                      </Tooltip>
+                                    )}
+                                    {threadStatus && (
                                       <span
-                                        className={`h-1.5 w-1.5 rounded-full ${threadStatus.dotClass} ${
-                                          threadStatus.pulse ? "animate-pulse" : ""
-                                        }`}
+                                        className={`inline-flex items-center gap-1 text-[10px] ${threadStatus.colorClass}`}
+                                      >
+                                        <span
+                                          className={`h-1.5 w-1.5 rounded-full ${threadStatus.dotClass} ${
+                                            threadStatus.pulse ? "animate-pulse" : ""
+                                          }`}
+                                        />
+                                        <span className="hidden md:inline">{threadStatus.label}</span>
+                                      </span>
+                                    )}
+                                    {renamingThreadId === thread.id ? (
+                                      <input
+                                        ref={(el) => {
+                                          if (el && renamingInputRef.current !== el) {
+                                            renamingInputRef.current = el;
+                                            el.focus();
+                                            el.select();
+                                          }
+                                        }}
+                                        className="min-w-0 flex-1 truncate rounded border border-ring bg-transparent px-0.5 text-base outline-none md:text-xs"
+                                        value={renamingTitle}
+                                        onChange={(e) => setRenamingTitle(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          e.stopPropagation();
+                                          if (e.key === "Enter") {
+                                            e.preventDefault();
+                                            renamingCommittedRef.current = true;
+                                            void commitRename(thread.id, renamingTitle, thread.title);
+                                          } else if (e.key === "Escape") {
+                                            e.preventDefault();
+                                            renamingCommittedRef.current = true;
+                                            cancelRename();
+                                          }
+                                        }}
+                                        onBlur={() => {
+                                          if (!renamingCommittedRef.current) {
+                                            void commitRename(thread.id, renamingTitle, thread.title);
+                                          }
+                                        }}
+                                        onClick={(e) => e.stopPropagation()}
                                       />
-                                      <span className="hidden md:inline">{threadStatus.label}</span>
-                                    </span>
-                                  )}
-                                  {renamingThreadId === thread.id ? (
-                                    <input
-                                      ref={(el) => {
-                                        if (el && renamingInputRef.current !== el) {
-                                          renamingInputRef.current = el;
-                                          el.focus();
-                                          el.select();
-                                        }
-                                      }}
-                                      className="min-w-0 flex-1 truncate rounded border border-ring bg-transparent px-0.5 text-base outline-none md:text-xs"
-                                      value={renamingTitle}
-                                      onChange={(e) => setRenamingTitle(e.target.value)}
-                                      onKeyDown={(e) => {
-                                        e.stopPropagation();
-                                        if (e.key === "Enter") {
-                                          e.preventDefault();
-                                          renamingCommittedRef.current = true;
-                                          void commitRename(thread.id, renamingTitle, thread.title);
-                                        } else if (e.key === "Escape") {
-                                          e.preventDefault();
-                                          renamingCommittedRef.current = true;
-                                          cancelRename();
-                                        }
-                                      }}
-                                      onBlur={() => {
-                                        if (!renamingCommittedRef.current) {
-                                          void commitRename(thread.id, renamingTitle, thread.title);
-                                        }
-                                      }}
-                                      onClick={(e) => e.stopPropagation()}
-                                    />
-                                  ) : (
-                                    <span className="min-w-0 flex-1 truncate text-xs">
-                                      {thread.title}
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="ml-auto flex shrink-0 items-center gap-1.5">
-                                  {terminalStatus && (
+                                    ) : (
+                                      <span className="min-w-0 flex-1 truncate text-xs">
+                                        {thread.title}
+                                      </span>
+                                    )}
+                                    {thread.agentRole === "supervisor" ? (
+                                      <UsersIcon className="size-3 shrink-0 text-muted-foreground/70" />
+                                    ) : null}
+                                  </div>
+                                  <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                                    {terminalStatus && (
+                                      <span
+                                        role="img"
+                                        aria-label={terminalStatus.label}
+                                        title={terminalStatus.label}
+                                        className={`inline-flex items-center justify-center ${terminalStatus.colorClass}`}
+                                      >
+                                        <TerminalIcon
+                                          className={`size-3 ${terminalStatus.pulse ? "animate-pulse" : ""}`}
+                                        />
+                                      </span>
+                                    )}
                                     <span
-                                      role="img"
-                                      aria-label={terminalStatus.label}
-                                      title={terminalStatus.label}
-                                      className={`inline-flex items-center justify-center ${terminalStatus.colorClass}`}
+                                      className={`text-[10px] ${
+                                        isActive ? "text-foreground/65" : "text-muted-foreground/40"
+                                      }`}
                                     >
-                                      <TerminalIcon
-                                        className={`size-3 ${terminalStatus.pulse ? "animate-pulse" : ""}`}
-                                      />
+                                      {formatRelativeTime(thread.createdAt)}
                                     </span>
-                                  )}
-                                  <span
-                                    className={`text-[10px] ${
-                                      isActive ? "text-foreground/65" : "text-muted-foreground/40"
-                                    }`}
+                                  </div>
+                                </SidebarMenuSubButton>
+                              </SidebarMenuSubItem>
+                              {childThreads.map((childThread) => (
+                                <SidebarMenuSubItem key={childThread.id} className="w-full pl-4">
+                                  <SidebarMenuSubButton
+                                    render={<div role="button" tabIndex={0} />}
+                                    size="sm"
+                                    isActive={routeThreadId === childThread.id}
+                                    className="h-7 w-full translate-x-0 cursor-default justify-start gap-2 px-2 text-left text-muted-foreground hover:bg-accent hover:text-foreground"
+                                    onClick={() => {
+                                      void navigate({
+                                        to: "/$threadId",
+                                        params: { threadId: childThread.id },
+                                      });
+                                    }}
                                   >
-                                    {formatRelativeTime(thread.createdAt)}
-                                  </span>
-                                </div>
-                              </SidebarMenuSubButton>
-                            </SidebarMenuSubItem>
+                                    <UsersIcon className="size-3 shrink-0 text-muted-foreground/70" />
+                                    <span className="min-w-0 flex-1 truncate text-xs">
+                                      {childThread.title}
+                                    </span>
+                                    <span className="rounded-full border border-border/70 px-1.5 py-0.5 text-[9px] uppercase tracking-[0.14em] text-muted-foreground">
+                                      Child
+                                    </span>
+                                  </SidebarMenuSubButton>
+                                </SidebarMenuSubItem>
+                              ))}
+                            </Fragment>
                           );
                         })}
 

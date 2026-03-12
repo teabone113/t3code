@@ -1,5 +1,5 @@
-import { type ProviderKind, type ThreadId } from "@t3tools/contracts";
-import { Effect, Layer, Option } from "effect";
+import { ProviderKind, type ProviderKind as ProviderKindType, type ThreadId } from "@t3tools/contracts";
+import { Effect, Layer, Option, Schema } from "effect";
 
 import { ProviderSessionRuntimeRepository } from "../../persistence/Services/ProviderSessionRuntime.ts";
 import {
@@ -24,8 +24,8 @@ function toPersistenceError(operation: string) {
 function decodeProviderKind(
   providerName: string,
   operation: string,
-): Effect.Effect<ProviderKind, ProviderSessionDirectoryPersistenceError> {
-  if (providerName === "codex") {
+): Effect.Effect<ProviderKindType, ProviderSessionDirectoryPersistenceError> {
+  if (Schema.is(ProviderKind)(providerName)) {
     return Effect.succeed(providerName);
   }
   return Effect.fail(

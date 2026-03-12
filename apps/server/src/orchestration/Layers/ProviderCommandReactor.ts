@@ -4,7 +4,9 @@ import {
   EventId,
   type OrchestrationEvent,
   type ProviderModelOptions,
+  type ProviderInteractionMode,
   type ProviderKind,
+  type ProviderSessionStartInput,
   type ProviderServiceTier,
   type OrchestrationSession,
   ThreadId,
@@ -12,6 +14,10 @@ import {
   type RuntimeMode,
   type TurnId,
 } from "@t3tools/contracts";
+import {
+  buildSupervisorDirectExecutionPlanInstructions,
+  buildSupervisorPlanningInstructions,
+} from "@t3tools/shared/supervisor";
 import { Cache, Cause, Duration, Effect, Layer, Option, Queue, Schema, Stream } from "effect";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
@@ -19,6 +25,7 @@ import { GitCore } from "../../git/Services/GitCore.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { mergeProjectContextIntoPrompt } from "../../projectContext/projectContextEnvelope.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   ProviderCommandReactor,
@@ -37,11 +44,6 @@ type ProviderIntentEvent = Extract<
       | "thread.session-stop-requested";
   }
 >;
-
-function toNonEmptyProviderInput(value: string | undefined): string | undefined {
-  const normalized = value?.trim();
-  return normalized && normalized.length > 0 ? normalized : undefined;
-}
 
 function mapProviderSessionStatusToOrchestrationStatus(
   status: "connecting" | "ready" | "running" | "error" | "closed",
@@ -72,6 +74,10 @@ const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const WORKTREE_BRANCH_PREFIX = "t3code";
 const TEMP_WORKTREE_BRANCH_PATTERN = new RegExp(`^${WORKTREE_BRANCH_PREFIX}\\/[0-9a-f]{8}$`);
+
+function normalizeProviderKind(value: string | null | undefined): ProviderKind | undefined {
+  return value === "codex" || value === "opencode" ? value : undefined;
+}
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) {
@@ -202,6 +208,7 @@ const make = Effect.gen(function* () {
       readonly provider?: ProviderKind;
       readonly model?: string;
       readonly modelOptions?: ProviderModelOptions;
+      readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
       readonly serviceTier?: ProviderServiceTier | null;
     },
   ) {
@@ -212,8 +219,7 @@ const make = Effect.gen(function* () {
     }
 
     const desiredRuntimeMode = thread.runtimeMode;
-    const currentProvider: ProviderKind | undefined =
-      thread.session?.providerName === "codex" ? thread.session.providerName : undefined;
+    const currentProvider = normalizeProviderKind(thread.session?.providerName);
     const preferredProvider: ProviderKind | undefined = options?.provider ?? currentProvider;
     const desiredModel = options?.model ?? thread.model;
     const effectiveCwd = resolveThreadWorkspaceCwd({
@@ -239,6 +245,7 @@ const make = Effect.gen(function* () {
         ...(desiredModel ? { model: desiredModel } : {}),
         ...(options?.serviceTier !== undefined ? { serviceTier: options.serviceTier } : {}),
         ...(options?.modelOptions !== undefined ? { modelOptions: options.modelOptions } : {}),
+        ...(options?.providerOptions !== undefined ? { providerOptions: options.providerOptions } : {}),
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
         runtimeMode: desiredRuntimeMode,
       });
@@ -320,25 +327,28 @@ const make = Effect.gen(function* () {
   const sendTurnForThread = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly messageText: string;
+    readonly projectContext?: string;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly provider?: ProviderKind;
     readonly model?: string;
     readonly serviceTier?: ProviderServiceTier | null;
     readonly modelOptions?: ProviderModelOptions;
-    readonly interactionMode?: "default" | "plan";
+    readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
+    readonly interactionMode?: ProviderInteractionMode;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
     if (!thread) {
       return;
     }
+    const providerInput = mergeProjectContextIntoPrompt(input.messageText, input.projectContext);
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.provider !== undefined ? { provider: input.provider } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
       ...(input.modelOptions !== undefined ? { modelOptions: input.modelOptions } : {}),
+      ...(input.providerOptions !== undefined ? { providerOptions: input.providerOptions } : {}),
     });
-    const normalizedInput = toNonEmptyProviderInput(input.messageText);
     const normalizedAttachments = input.attachments ?? [];
     const activeSession = yield* providerService.listSessions().pipe(
       Effect.map((sessions) => sessions.find((session) => session.threadId === input.threadId)),
@@ -349,15 +359,40 @@ const make = Effect.gen(function* () {
         : (yield* providerService.getCapabilities(activeSession.provider)).sessionModelSwitch;
     const modelForTurn =
       sessionModelSwitch === "unsupported" ? activeSession?.model : input.model;
+    const supervisorInstructions =
+      thread.agentRole === "supervisor" &&
+      thread.supervisorState &&
+      (thread.supervisorState.lifecycleState === "drafting_plan" ||
+        thread.supervisorState.lifecycleState === "awaiting_plan_approval")
+        ? input.interactionMode === "agent-plan"
+          ? buildSupervisorDirectExecutionPlanInstructions({
+              maxConcurrentChildren: thread.supervisorState.maxConcurrentChildren,
+              childModel: thread.supervisorState.childModel,
+            })
+          : buildSupervisorPlanningInstructions({
+              maxConcurrentChildren: thread.supervisorState.maxConcurrentChildren,
+            })
+        : undefined;
 
     yield* providerService.sendTurn({
       threadId: input.threadId,
-      ...(normalizedInput ? { input: normalizedInput } : {}),
+      ...(providerInput ? { input: providerInput } : {}),
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { model: modelForTurn } : {}),
       ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
       ...(input.modelOptions !== undefined ? { modelOptions: input.modelOptions } : {}),
-      ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      ...(input.interactionMode !== undefined
+        ? {
+            interactionMode:
+              supervisorInstructions &&
+              (input.interactionMode === "default" || input.interactionMode === "agent-plan")
+                ? "plan"
+                : input.interactionMode,
+          }
+        : {}),
+      ...(supervisorInstructions
+        ? { developerInstructionsAppend: supervisorInstructions }
+        : {}),
     });
   });
 
@@ -461,6 +496,9 @@ const make = Effect.gen(function* () {
       worktreePath: thread.worktreePath,
       messageId: message.id,
       messageText: message.text,
+      ...(event.payload.projectContext !== undefined
+        ? { projectContext: event.payload.projectContext }
+        : {}),
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
     }).pipe(Effect.forkScoped);
 
@@ -472,6 +510,9 @@ const make = Effect.gen(function* () {
       ...(event.payload.model !== undefined ? { model: event.payload.model } : {}),
       ...(event.payload.serviceTier !== undefined ? { serviceTier: event.payload.serviceTier } : {}),
       ...(event.payload.modelOptions !== undefined ? { modelOptions: event.payload.modelOptions } : {}),
+      ...(event.payload.providerOptions !== undefined
+        ? { providerOptions: event.payload.providerOptions }
+        : {}),
       interactionMode: event.payload.interactionMode,
       createdAt: event.payload.createdAt,
     });

@@ -9,9 +9,11 @@ interface PendingRequest {
   timeout: ReturnType<typeof setTimeout>;
 }
 
-const REQUEST_TIMEOUT_MS = 60_000;
+const REQUEST_TIMEOUT_MS = 10_000;
 const RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000];
-const decodeWsResponseFromJson = Schema.decodeUnknownExit(Schema.fromJsonString(WsResponse));
+const decodeWsResponseFromJson = Schema.decodeUnknownExit(
+  Schema.fromJsonString(WsResponse),
+);
 const isWsPushEnvelope = Schema.is(WsPush);
 const isWebSocketResponseEnvelope = Schema.is(WebSocketResponse);
 
@@ -53,7 +55,8 @@ export class WsTransport {
       throw new Error("Request method is required");
     }
     const id = String(this.nextId++);
-    const body = params != null ? { ...params, _tag: method } : { _tag: method };
+    const body =
+      params != null ? { ...params, _tag: method } : { _tag: method };
     const message: WsRequestEnvelope = { id, body };
 
     return new Promise<T>((resolve, reject) => {
@@ -201,8 +204,9 @@ export class WsTransport {
     if (this.disposed) return;
 
     const delay =
-      RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)] ??
-      RECONNECT_DELAYS_MS[0]!;
+      RECONNECT_DELAYS_MS[
+        Math.min(this.reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)
+      ] ?? RECONNECT_DELAYS_MS[0]!;
 
     this.reconnectAttempt++;
     this.reconnectTimer = setTimeout(() => {

@@ -186,6 +186,34 @@ it.effect("accepts provider-scoped model options in thread.turn.start", () =>
   }),
 );
 
+it.effect("accepts provider-scoped start options in thread.turn.start", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadTurnStartCommand({
+      type: "thread.turn.start",
+      commandId: "cmd-turn-provider-options",
+      threadId: "thread-1",
+      message: {
+        messageId: "msg-provider-options",
+        role: "user",
+        text: "hello",
+        attachments: [],
+      },
+      provider: "opencode",
+      providerOptions: {
+        opencode: {
+          binaryPath: "/opt/homebrew/bin/opencode",
+        },
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(parsed.provider, "opencode");
+    assert.strictEqual(
+      parsed.providerOptions?.opencode?.binaryPath,
+      "/opt/homebrew/bin/opencode",
+    );
+  }),
+);
+
 it.effect(
   "decodes thread.turn-start-requested defaults for provider, runtime mode, and interaction mode",
   () =>

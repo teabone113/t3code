@@ -59,6 +59,7 @@ import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnap
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor";
 import { ProviderService } from "./provider/Services/ProviderService";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
+import { OpenCodeAdapter } from "./provider/Services/OpenCodeAdapter";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { clamp } from "effect/Number";
 import { Open, resolveAvailableEditors, resolveAvailableTerminalApps } from "./open";
@@ -78,6 +79,8 @@ import {
 import { parseBase64DataUrl } from "./imageMime.ts";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import { expandHomePath } from "./os-jank.ts";
+import { JCodeMunchProjectContext } from "./projectContext/Services/JCodeMunchProjectContext.ts";
+import { mergeProjectContextIntoPrompt } from "./projectContext/projectContextEnvelope.ts";
 
 /**
  * ServerShape - Service API for server lifecycle control.
@@ -213,7 +216,9 @@ export type ServerCoreRuntimeServices =
   | CheckpointDiffQuery
   | OrchestrationReactor
   | ProviderService
-  | ProviderHealth;
+  | ProviderHealth
+  | OpenCodeAdapter
+  | JCodeMunchProjectContext;
 
 export type ServerRuntimeServices =
   | ServerCoreRuntimeServices
@@ -260,6 +265,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const terminalManager = yield* TerminalManager;
   const keybindingsManager = yield* Keybindings;
   const providerHealth = yield* ProviderHealth;
+  const openCodeAdapter = yield* OpenCodeAdapter;
+  const jcodemunchProjectContext = yield* JCodeMunchProjectContext;
   const git = yield* GitCore;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -705,6 +712,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           model: bootstrapProjectDefaultModel,
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "full-access",
+          agentRole: "standard",
+          parentThreadId: null,
+          supervisorState: null,
           branch: null,
           worktreePath: null,
           createdAt,
@@ -769,8 +779,42 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case ORCHESTRATION_WS_METHODS.dispatchCommand: {
         const { command } = request.body;
+        if (command.type === "project.create") {
+          yield* Effect.logInfo("received project.create command", {
+            commandId: command.commandId,
+            projectId: command.projectId,
+            title: command.title,
+            workspaceRoot: command.workspaceRoot,
+          });
+        }
         const normalizedCommand = yield* normalizeDispatchCommand({ command });
-        return yield* orchestrationEngine.dispatch(normalizedCommand);
+        if (normalizedCommand.type === "project.create") {
+          yield* Effect.logInfo("dispatching project.create command", {
+            commandId: normalizedCommand.commandId,
+            projectId: normalizedCommand.projectId,
+            title: normalizedCommand.title,
+            workspaceRoot: normalizedCommand.workspaceRoot,
+          });
+        }
+        return yield* orchestrationEngine.dispatch(normalizedCommand).pipe(
+          Effect.tap(() =>
+            normalizedCommand.type === "project.create"
+              ? Effect.logInfo("project.create command completed", {
+                  commandId: normalizedCommand.commandId,
+                  projectId: normalizedCommand.projectId,
+                })
+              : Effect.void,
+          ),
+          Effect.tapError((error) =>
+            normalizedCommand.type === "project.create"
+              ? Effect.logError("project.create command failed", {
+                  cause: error,
+                  commandId: normalizedCommand.commandId,
+                  projectId: normalizedCommand.projectId,
+                })
+              : Effect.void,
+          ),
+        );
       }
 
       case ORCHESTRATION_WS_METHODS.steerTurn: {
@@ -778,10 +822,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           request.body.threadId,
           request.body.message.attachments,
         );
+        const input = mergeProjectContextIntoPrompt(
+          request.body.message.text.trim() || undefined,
+          request.body.projectContext,
+        );
         return yield* providerService.steerTurn({
           threadId: request.body.threadId,
           expectedTurnId: request.body.expectedTurnId,
-          input: request.body.message.text.trim() || undefined,
+          input,
           attachments: normalizedAttachments,
           ...(request.body.model !== undefined ? { model: request.body.model } : {}),
           ...(request.body.serviceTier !== undefined
@@ -851,6 +899,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           ),
         );
         return { relativePath: target.relativePath };
+      }
+
+      case WS_METHODS.projectsBuildContext: {
+        const body = stripRequestTag(request.body);
+        return yield* jcodemunchProjectContext.buildContext({
+          ...body,
+          cwd: path.resolve(yield* expandHomePath(body.cwd.trim())),
+        });
       }
 
       case WS_METHODS.shellOpenInEditor: {
@@ -959,6 +1015,46 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const body = stripRequestTag(request.body);
         const keybindingsConfig = yield* keybindingsManager.upsertKeybindingRule(body);
         return { keybindings: keybindingsConfig, issues: [] };
+      }
+
+      case WS_METHODS.providerGetCatalog: {
+        const body = stripRequestTag(request.body);
+        if (body.provider !== "opencode") {
+          return yield* new RouteRequestError({
+            message: `Provider '${body.provider}' is not supported for provider admin routes.`,
+          });
+        }
+        return yield* openCodeAdapter.getCatalog(body);
+      }
+
+      case WS_METHODS.providerSetApiKeyAuth: {
+        const body = stripRequestTag(request.body);
+        if (body.provider !== "opencode") {
+          return yield* new RouteRequestError({
+            message: `Provider '${body.provider}' is not supported for provider admin routes.`,
+          });
+        }
+        return yield* openCodeAdapter.setApiKeyAuth(body);
+      }
+
+      case WS_METHODS.providerStartOauth: {
+        const body = stripRequestTag(request.body);
+        if (body.provider !== "opencode") {
+          return yield* new RouteRequestError({
+            message: `Provider '${body.provider}' is not supported for provider admin routes.`,
+          });
+        }
+        return yield* openCodeAdapter.startOauth(body);
+      }
+
+      case WS_METHODS.providerCompleteOauth: {
+        const body = stripRequestTag(request.body);
+        if (body.provider !== "opencode") {
+          return yield* new RouteRequestError({
+            message: `Provider '${body.provider}' is not supported for provider admin routes.`,
+          });
+        }
+        return yield* openCodeAdapter.completeOauth(body);
       }
 
       default: {

@@ -5,7 +5,7 @@ import {
 } from "@t3tools/shared/versionStage";
 
 export const APP_BASE_NAME = "T3 Code";
-export const APP_RELEASE_VERSION = "0.0.6";
+export const APP_RELEASE_VERSION = "0.0.7";
 export const IOS_SHELL_VERSION = "0.0.013";
 
 export const APP_STAGE_LABEL = import.meta.env.DEV ? "Dev" : deriveStageLabel(APP_RELEASE_VERSION);

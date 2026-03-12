@@ -3,6 +3,7 @@ import type {
   OrchestrationProposedPlanId,
   OrchestrationSessionStatus,
   OrchestrationThreadActivity,
+  ProjectContextSource,
   ProjectScript as ContractProjectScript,
   ThreadId,
   ProjectId,
@@ -44,6 +45,7 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   text: string;
   attachments?: ChatAttachment[];
+  projectContextSources?: ReadonlyArray<ProjectContextSource>;
   createdAt: string;
   completedAt?: string | undefined;
   streaming: boolean;

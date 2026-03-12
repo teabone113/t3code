@@ -9,6 +9,8 @@ import {
   type KeybindingCommand,
   type CodexReasoningEffort,
   type MessageId,
+  type ProjectBuildContextResult,
+  type ProjectContextSource,
   type ProjectId,
   type ProjectEntry,
   type ProjectScript,
@@ -29,6 +31,7 @@ import {
   getDefaultModel,
   getDefaultReasoningEffort,
   getReasoningEffortOptions,
+  isOpenCodeModelSlug,
   normalizeModelSlug,
   resolveModelSlugForProvider,
 } from "@t3tools/shared/model";
@@ -51,9 +54,16 @@ import {
   useVirtualizer,
 } from "@tanstack/react-virtual";
 import { gitBranchesQueryOptions, gitCreateWorktreeMutationOptions } from "~/lib/gitReactQuery";
+import { providerCatalogQueryOptions } from "~/lib/providerCatalogReactQuery";
+import {
+  getProviderConnectionLabel,
+  getProviderStatus,
+  isProviderConnected,
+} from "~/lib/providerStatus";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
 
+import { getProviderStartOptionsForProvider } from "../appSettings";
 import { isCapacitorShell, isElectron } from "../env";
 import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
 import {
@@ -206,6 +216,7 @@ import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
 import {
+  getJCodeMunchSettings,
   getAppModelOptions,
   resolveAppModelSelection,
   resolveAppServiceTier,
@@ -409,6 +420,60 @@ function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[] {
   }
   return previewUrls;
 }
+
+interface ProjectContextMessageMeta {
+  readonly sources: ReadonlyArray<ProjectContextSource>;
+}
+
+const EMPTY_PROJECT_CONTEXT_META: Record<string, ProjectContextMessageMeta> = {};
+
+function summarizeProjectContextSource(source: ProjectContextSource): string {
+  if (source.kind === "repo-outline") {
+    return "Repo outline";
+  }
+  const fileLabel = source.filePath ? basenameOfPath(source.filePath) : source.label;
+  return source.line ? `${fileLabel}:${source.line}` : fileLabel;
+}
+
+function projectContextSourceKey(source: ProjectContextSource): string {
+  return `${source.kind}:${source.label}:${source.filePath ?? ""}:${source.line ?? 0}`;
+}
+
+const UserMessageProjectContextSummary = memo(function UserMessageProjectContextSummary({
+  sources,
+}: {
+  readonly sources: ReadonlyArray<ProjectContextSource>;
+}) {
+  const visibleSources = sources.slice(0, 4);
+  const remainingCount = Math.max(0, sources.length - visibleSources.length);
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-emerald-700 dark:text-emerald-300">
+        <ZapIcon className="size-3" />
+        JCodeMunch
+      </span>
+      {visibleSources.map((source) => (
+        <Badge
+          key={projectContextSourceKey(source)}
+          size="sm"
+          variant="outline"
+          className="max-w-[220px] truncate text-[10px] text-muted-foreground"
+          title={
+            source.filePath
+              ? `${source.label} • ${source.filePath}${source.line ? `:${source.line}` : ""}`
+              : source.label
+          }
+        >
+          {summarizeProjectContextSource(source)}
+        </Badge>
+      ))}
+      {remainingCount > 0 ? (
+        <span className="text-[10px] text-muted-foreground/75">+{remainingCount} more</span>
+      ) : null}
+    </div>
+  );
+});
 
 type ComposerCommandItem =
   | {
@@ -664,6 +729,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
+  const [projectContextMetaByThreadId, setProjectContextMetaByThreadId] = useState<
+    Record<string, Record<string, ProjectContextMessageMeta>>
+  >({});
   const optimisticUserMessagesRef = useRef(optimisticUserMessages);
   optimisticUserMessagesRef.current = optimisticUserMessages;
   const [localDraftErrorsByThreadId, setLocalDraftErrorsByThreadId] = useState<
@@ -828,6 +896,25 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const selectedServiceTierSetting = settings.codexServiceTier;
   const selectedServiceTier = resolveAppServiceTier(selectedServiceTierSetting);
+  const openCodeCatalogQuery = useQuery(
+    providerCatalogQueryOptions({
+      provider: "opencode",
+      cwd: activeProject?.cwd ?? activeThread?.worktreePath ?? null,
+      binaryPath: settings.opencodeBinaryPath || null,
+      enabled:
+        selectedProviderByThreadId === "opencode" ||
+        activeThread?.session?.provider === "opencode" ||
+        isOpenCodeModelSlug(activeThread?.model),
+    }),
+  );
+  const openCodeDynamicModelOptions = useMemo(
+    () =>
+      (openCodeCatalogQuery.data?.models ?? []).map((model) => ({
+        slug: model.slug,
+        name: model.name,
+      })),
+    [openCodeCatalogQuery.data?.models],
+  );
   const lockedProvider: ProviderKind | null = hasThreadStarted
     ? (sessionProvider ?? selectedProviderByThreadId ?? null)
     : null;
@@ -836,18 +923,31 @@ export default function ChatView({ threadId }: ChatViewProps) {
     selectedProvider,
     activeThread?.model ?? activeProject?.model ?? getDefaultModel(selectedProvider),
   );
-  const customModelsForSelectedProvider = settings.customCodexModels;
+  const customModelsForSelectedProvider =
+    selectedProvider === "opencode" ? settings.customOpenCodeModels : settings.customCodexModels;
   const selectedModel = useMemo(() => {
     const draftModel = composerDraft.model;
     if (!draftModel) {
-      return baseThreadModel;
+      return resolveAppModelSelection(
+        selectedProvider,
+        customModelsForSelectedProvider,
+        baseThreadModel,
+        selectedProvider === "opencode" ? openCodeDynamicModelOptions : undefined,
+      ) as ModelSlug;
     }
     return resolveAppModelSelection(
       selectedProvider,
       customModelsForSelectedProvider,
       draftModel,
+      selectedProvider === "opencode" ? openCodeDynamicModelOptions : undefined,
     ) as ModelSlug;
-  }, [baseThreadModel, composerDraft.model, customModelsForSelectedProvider, selectedProvider]);
+  }, [
+    baseThreadModel,
+    composerDraft.model,
+    customModelsForSelectedProvider,
+    openCodeDynamicModelOptions,
+    selectedProvider,
+  ]);
   const reasoningOptions = getReasoningEffortOptions(selectedProvider);
   const supportsReasoningEffort = reasoningOptions.length > 0;
   const selectedEffort = composerDraft.effort ?? getDefaultReasoningEffort(selectedProvider);
@@ -863,6 +963,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
     };
     return Object.keys(codexOptions).length > 0 ? { codex: codexOptions } : undefined;
   }, [selectedCodexFastModeEnabled, selectedEffort, selectedProvider, supportsReasoningEffort]);
+  const selectedProviderOptionsForDispatch = useMemo(
+    () => getProviderStartOptionsForProvider(settings, selectedProvider),
+    [selectedProvider, settings],
+  );
   const buildModelOptionsForDispatch = useCallback(
     (
       provider: ProviderKind,
@@ -882,8 +986,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const selectedModelForPicker = selectedModel;
   const modelOptionsByProvider = useMemo(
-    () => getCustomModelOptionsByProvider(settings),
-    [settings],
+    () => getCustomModelOptionsByProvider(settings, openCodeDynamicModelOptions),
+    [openCodeDynamicModelOptions, settings],
   );
   const selectedModelForPickerWithCustomFallback = useMemo(() => {
     const currentOptions = modelOptionsByProvider[selectedProvider];
@@ -1072,7 +1176,48 @@ export default function ChatView({ threadId }: ChatViewProps) {
       delete attachmentPreviewHandoffTimeoutByMessageIdRef.current[messageId];
     }, ATTACHMENT_PREVIEW_HANDOFF_TTL_MS);
   }, []);
+  const setProjectContextMetaForMessage = useCallback(
+    (
+      threadId: ThreadId,
+      messageId: MessageId,
+      result: Pick<ProjectBuildContextResult, "applied" | "sources"> | undefined,
+    ) => {
+      setProjectContextMetaByThreadId((existing) => {
+        const nextForThread = { ...existing[threadId] };
+        if (!result?.applied || result.sources.length === 0) {
+          if (!(messageId in nextForThread)) {
+            return existing;
+          }
+          delete nextForThread[messageId];
+        } else {
+          nextForThread[messageId] = { sources: result.sources };
+        }
+
+        if (Object.keys(nextForThread).length === 0) {
+          if (!(threadId in existing)) {
+            return existing;
+          }
+          const next = { ...existing };
+          delete next[threadId];
+          return next;
+        }
+
+        return {
+          ...existing,
+          [threadId]: nextForThread,
+        };
+      });
+    },
+    [],
+  );
   const serverMessages = activeThread?.messages;
+  const activeProjectContextMeta = useMemo(
+    () =>
+      activeThreadId
+        ? (projectContextMetaByThreadId[activeThreadId] ?? EMPTY_PROJECT_CONTEXT_META)
+        : EMPTY_PROJECT_CONTEXT_META,
+    [activeThreadId, projectContextMetaByThreadId],
+  );
   const timelineMessages = useMemo(() => {
     const messages = serverMessages ?? [];
     const serverMessagesWithPreviewHandoff =
@@ -1116,16 +1261,42 @@ export default function ChatView({ threadId }: ChatViewProps) {
             return changed ? { ...message, attachments } : message;
           });
 
+    const applyProjectContextMeta = (message: ChatMessage): ChatMessage => {
+      if (message.role !== "user") {
+        return message;
+      }
+      const projectContextMeta = activeProjectContextMeta[message.id];
+      if (!projectContextMeta) {
+        return message;
+      }
+      return {
+        ...message,
+        projectContextSources: projectContextMeta.sources,
+      };
+    };
+
+    const messagesWithProjectContext =
+      Object.keys(activeProjectContextMeta).length === 0
+        ? serverMessagesWithPreviewHandoff
+        : serverMessagesWithPreviewHandoff.map(applyProjectContextMeta);
+
     if (optimisticUserMessages.length === 0) {
-      return serverMessagesWithPreviewHandoff;
+      return messagesWithProjectContext;
     }
-    const serverIds = new Set(serverMessagesWithPreviewHandoff.map((message) => message.id));
-    const pendingMessages = optimisticUserMessages.filter((message) => !serverIds.has(message.id));
+    const serverIds = new Set(messagesWithProjectContext.map((message) => message.id));
+    const pendingMessages = optimisticUserMessages
+      .filter((message) => !serverIds.has(message.id))
+      .map(applyProjectContextMeta);
     if (pendingMessages.length === 0) {
-      return serverMessagesWithPreviewHandoff;
+      return messagesWithProjectContext;
     }
-    return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
-  }, [serverMessages, attachmentPreviewHandoffByMessageId, optimisticUserMessages]);
+    return [...messagesWithProjectContext, ...pendingMessages];
+  }, [
+    serverMessages,
+    attachmentPreviewHandoffByMessageId,
+    optimisticUserMessages,
+    activeProjectContextMeta,
+  ]);
   const timelineEntries = useMemo(
     () =>
       deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
@@ -1327,7 +1498,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const providerStatuses = serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES;
   const activeProvider = activeThread?.session?.provider ?? "codex";
   const activeProviderStatus = useMemo(
-    () => providerStatuses.find((status) => status.provider === activeProvider) ?? null,
+    () => getProviderStatus(providerStatuses, activeProvider),
     [activeProvider, providerStatuses],
   );
   const activeProjectCwd = activeProject?.cwd ?? null;
@@ -2541,6 +2712,39 @@ export default function ChatView({ threadId }: ChatViewProps) {
     );
   }, []);
 
+  const maybeBuildJCodeMunchContext = useCallback(
+    async (input: { prompt: string; workspaceRoot: string | null | undefined }) => {
+      const api = readNativeApi();
+      if (!api) {
+        return undefined;
+      }
+
+      const prompt = input.prompt.trim();
+      const workspaceRoot = input.workspaceRoot?.trim();
+      const jcodemunch = getJCodeMunchSettings(settings);
+      if (!jcodemunch.enabled || !jcodemunch.binaryPath || !prompt || !workspaceRoot) {
+        return undefined;
+      }
+
+      try {
+        const result = await api.projects.buildContext({
+          cwd: workspaceRoot,
+          prompt,
+          enabled: true,
+          binaryPath: jcodemunch.binaryPath,
+        });
+        return result.applied ? result : undefined;
+      } catch (error) {
+        console.warn("[jcodemunch] failed to build project context", {
+          workspaceRoot,
+          error,
+        });
+        return undefined;
+      }
+    },
+    [settings],
+  );
+
   const dispatchThreadTurn = useCallback(
     async (input: {
       promptText: string;
@@ -2708,6 +2912,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
           sizeBytes: attachment.sizeBytes,
           dataUrl: attachment.dataUrl,
         }));
+        const projectContext = await maybeBuildJCodeMunchContext({
+          prompt: trimmed || IMAGE_ONLY_BOOTSTRAP_PROMPT,
+          workspaceRoot: nextThreadWorktreePath ?? activeProject.cwd,
+        });
+        setProjectContextMetaForMessage(threadIdForSend, messageIdForSend, projectContext);
         await api.orchestration.dispatchCommand({
           type: "thread.turn.start",
           commandId: newCommandId(),
@@ -2733,6 +2942,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
                 ),
               }
             : {}),
+          ...(getProviderStartOptionsForProvider(settings, input.provider)
+            ? {
+                providerOptions: getProviderStartOptionsForProvider(settings, input.provider),
+              }
+            : {}),
+          ...(projectContext?.contextText ? { projectContext: projectContext.contextText } : {}),
           provider: input.provider,
           assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
           runtimeMode: input.runtimeMode,
@@ -2760,6 +2975,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           promptRef.current.length === 0 &&
           composerImagesRef.current.length === 0
         ) {
+          setProjectContextMetaForMessage(threadIdForSend, messageIdForSend, undefined);
           setOptimisticUserMessages((existing) => {
             const removed = existing.filter((message) => message.id === messageIdForSend);
             for (const message of removed) {
@@ -2780,6 +2996,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
           threadIdForSend,
           err instanceof Error ? err.message : "Failed to send message.",
         );
+        if (!turnStartSucceeded) {
+          setProjectContextMetaForMessage(threadIdForSend, messageIdForSend, undefined);
+        }
         return false;
       } finally {
         sendInFlightRef.current = false;
@@ -2800,15 +3019,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
       forceStickToBottom,
       isLocalDraftThread,
       isServerThread,
+      maybeBuildJCodeMunchContext,
       persistThreadSettingsForNextTurn,
       resetSendPhase,
       runProjectScript,
       selectedServiceTier,
+      setProjectContextMetaForMessage,
       setPrompt,
       setStoreThreadBranch,
       setStoreThreadError,
       setThreadError,
-      settings.enableAssistantStreaming,
+      settings,
     ],
   );
 
@@ -2894,6 +3115,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
         if (!source.prompt.trim() && source.attachments.length === 0) {
           return false;
         }
+        const projectContext = await maybeBuildJCodeMunchContext({
+          prompt: source.prompt.trim() || IMAGE_ONLY_BOOTSTRAP_PROMPT,
+          workspaceRoot: activeThread.worktreePath ?? activeProject?.cwd,
+        });
         await api.orchestration.steerTurn({
           threadId: activeThread.id,
           expectedTurnId: activeThread.session.activeTurnId,
@@ -2922,6 +3147,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                 ),
               }
             : {}),
+          ...(projectContext?.contextText ? { projectContext: projectContext.contextText } : {}),
           interactionMode: source.interactionMode ?? DEFAULT_INTERACTION_MODE,
         });
         setThreadError(activeThread.id, null);
@@ -2943,14 +3169,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
     },
     [
+      activeProject,
       activeThread,
-        buildModelOptionsForDispatch,
-        clearComposerDraftContent,
-        composerImages,
-        dismissComposerKeyboard,
-        interactionMode,
-        isConnecting,
-        prompt,
+      buildModelOptionsForDispatch,
+      clearComposerDraftContent,
+      composerImages,
+      dismissComposerKeyboard,
+      interactionMode,
+      isConnecting,
+      maybeBuildJCodeMunchContext,
+      prompt,
       runtimeMode,
       selectedCodexFastModeEnabled,
       selectedEffort,
@@ -3364,6 +3592,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
         // while the same-thread implementation turn is starting.
         setComposerDraftInteractionMode(threadIdForSend, nextInteractionMode);
 
+        const projectContext = await maybeBuildJCodeMunchContext({
+          prompt: trimmed,
+          workspaceRoot: activeThread.worktreePath ?? activeProject?.cwd,
+        });
+        setProjectContextMetaForMessage(threadIdForSend, messageIdForSend, projectContext);
+
         await api.orchestration.dispatchCommand({
           type: "thread.turn.start",
           commandId: newCommandId(),
@@ -3379,6 +3613,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
           ...(selectedModelOptionsForDispatch
             ? { modelOptions: selectedModelOptionsForDispatch }
             : {}),
+          ...(selectedProviderOptionsForDispatch
+            ? { providerOptions: selectedProviderOptionsForDispatch }
+            : {}),
+          ...(projectContext?.contextText ? { projectContext: projectContext.contextText } : {}),
           assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
           runtimeMode,
           interactionMode: nextInteractionMode,
@@ -3386,6 +3624,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         });
         sendInFlightRef.current = false;
       } catch (err) {
+        setProjectContextMetaForMessage(threadIdForSend, messageIdForSend, undefined);
         setOptimisticUserMessages((existing) =>
           existing.filter((message) => message.id !== messageIdForSend),
         );
@@ -3398,6 +3637,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
     },
     [
+      activeProject,
       activeThread,
       beginSendPhase,
       dismissComposerKeyboard,
@@ -3405,12 +3645,15 @@ export default function ChatView({ threadId }: ChatViewProps) {
       isConnecting,
       isSendBusy,
       isServerThread,
+      maybeBuildJCodeMunchContext,
       persistThreadSettingsForNextTurn,
       resetSendPhase,
       runtimeMode,
       selectedModel,
       selectedModelOptionsForDispatch,
+      selectedProviderOptionsForDispatch,
       selectedProvider,
+      setProjectContextMetaForMessage,
       setComposerDraftInteractionMode,
       setThreadError,
       settings.enableAssistantStreaming,
@@ -3464,13 +3707,19 @@ export default function ChatView({ threadId }: ChatViewProps) {
         worktreePath: activeThread.worktreePath,
         createdAt,
       })
-      .then(() =>
-        api.orchestration.dispatchCommand({
+      .then(async () => {
+        const projectContext = await maybeBuildJCodeMunchContext({
+          prompt: implementationPrompt,
+          workspaceRoot: activeThread.worktreePath ?? activeProject.cwd,
+        });
+        const implementationMessageId = newMessageId();
+        setProjectContextMetaForMessage(nextThreadId, implementationMessageId, projectContext);
+        return api.orchestration.dispatchCommand({
           type: "thread.turn.start",
           commandId: newCommandId(),
           threadId: nextThreadId,
           message: {
-            messageId: newMessageId(),
+            messageId: implementationMessageId,
             role: "user",
             text: implementationPrompt,
             attachments: [],
@@ -3480,12 +3729,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
           ...(selectedModelOptionsForDispatch
             ? { modelOptions: selectedModelOptionsForDispatch }
             : {}),
+          ...(selectedProviderOptionsForDispatch
+            ? { providerOptions: selectedProviderOptionsForDispatch }
+            : {}),
+          ...(projectContext?.contextText ? { projectContext: projectContext.contextText } : {}),
           assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
           runtimeMode,
           interactionMode: "default",
           createdAt,
-        }),
-      )
+        });
+      })
       .then(() => api.orchestration.getSnapshot())
       .then((snapshot) => {
         syncServerReadModel(snapshot);
@@ -3524,14 +3777,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
     isConnecting,
     isSendBusy,
     isServerThread,
-    navigate,
-    resetSendPhase,
+      maybeBuildJCodeMunchContext,
+      navigate,
+      resetSendPhase,
     runtimeMode,
     selectedModel,
-    selectedModelOptionsForDispatch,
-    selectedProvider,
-    settings.enableAssistantStreaming,
-    syncServerReadModel,
+      selectedModelOptionsForDispatch,
+      selectedProviderOptionsForDispatch,
+      selectedProvider,
+      setProjectContextMetaForMessage,
+      settings.enableAssistantStreaming,
+      syncServerReadModel,
   ]);
 
   const onProviderModelSelect = useCallback(
@@ -3544,7 +3800,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
       setComposerDraftProvider(activeThread.id, provider);
       setComposerDraftModel(
         activeThread.id,
-        resolveAppModelSelection(provider, settings.customCodexModels, model),
+        resolveAppModelSelection(
+          provider,
+          provider === "opencode" ? settings.customOpenCodeModels : settings.customCodexModels,
+          model,
+          provider === "opencode" ? openCodeDynamicModelOptions : undefined,
+        ),
       );
       scheduleComposerFocus();
     },
@@ -3555,6 +3816,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
       setComposerDraftModel,
       setComposerDraftProvider,
       settings.customCodexModels,
+      settings.customOpenCodeModels,
+      openCodeDynamicModelOptions,
     ],
   );
   const onEffortSelect = useCallback(
@@ -4225,6 +4488,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                     model={selectedModelForPickerWithCustomFallback}
                     lockedProvider={lockedProvider}
                     modelOptionsByProvider={modelOptionsByProvider}
+                    providerStatuses={providerStatuses}
                     serviceTierSetting={selectedServiceTierSetting}
                     onProviderModelChange={onProviderModelSelect}
                   />
@@ -5785,6 +6049,10 @@ const MessagesTimeline = memo(function MessagesTimeline({
                     {row.message.text}
                   </pre>
                 )}
+                {row.message.projectContextSources &&
+                row.message.projectContextSources.length > 0 ? (
+                  <UserMessageProjectContextSummary sources={row.message.projectContextSources} />
+                ) : null}
                 <div className="mt-1.5 flex items-center justify-end gap-2">
                   <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
                     {row.message.text && <MessageCopyButton text={row.message.text} />}
@@ -5985,20 +6253,25 @@ function isAvailableProviderOption(option: (typeof PROVIDER_OPTIONS)[number]): o
 const AVAILABLE_PROVIDER_OPTIONS = PROVIDER_OPTIONS.filter(isAvailableProviderOption);
 const UNAVAILABLE_PROVIDER_OPTIONS = PROVIDER_OPTIONS.filter((option) => !option.available);
 const COMING_SOON_PROVIDER_OPTIONS = [
-  { id: "opencode", label: "OpenCode", icon: OpenCodeIcon },
   { id: "gemini", label: "Gemini", icon: Gemini },
 ] as const;
 
 function getCustomModelOptionsByProvider(settings: {
   customCodexModels: readonly string[];
-}): Record<ProviderKind, ReadonlyArray<{ slug: string; name: string }>> {
+  customOpenCodeModels: readonly string[];
+}, opencodeOptions: ReadonlyArray<{ slug: string; name: string }>): Record<
+  ProviderKind,
+  ReadonlyArray<{ slug: string; name: string }>
+> {
   return {
     codex: getAppModelOptions("codex", settings.customCodexModels),
+    opencode: getAppModelOptions("opencode", settings.customOpenCodeModels, null, opencodeOptions),
   };
 }
 
 const PROVIDER_ICON_BY_PROVIDER: Record<ProviderPickerKind, Icon> = {
   codex: OpenAI,
+  opencode: OpenCodeIcon,
   claudeCode: ClaudeAI,
   cursor: CursorIcon,
 };
@@ -6041,15 +6314,22 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   model: ModelSlug;
   lockedProvider: ProviderKind | null;
   modelOptionsByProvider: Record<ProviderKind, ReadonlyArray<{ slug: string; name: string }>>;
+  providerStatuses: ReadonlyArray<ServerProviderStatus>;
   serviceTierSetting: AppServiceTier;
   disabled?: boolean;
   onProviderModelChange: (provider: ProviderKind, model: ModelSlug) => void;
 }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [modelQueryByProvider, setModelQueryByProvider] = useState<Record<ProviderKind, string>>({
+    codex: "",
+    opencode: "",
+  });
   const selectedProviderOptions = props.modelOptionsByProvider[props.provider];
   const selectedModelLabel =
     selectedProviderOptions.find((option) => option.slug === props.model)?.name ?? props.model;
   const ProviderIcon = PROVIDER_ICON_BY_PROVIDER[props.provider];
+  const selectedProviderStatus = getProviderStatus(props.providerStatuses, props.provider);
+  const selectedProviderConnected = isProviderConnected(selectedProviderStatus);
 
   return (
     <Menu
@@ -6058,6 +6338,9 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         if (props.disabled) {
           setIsMenuOpen(false);
           return;
+        }
+        if (!open) {
+          setModelQueryByProvider({ codex: "", opencode: "" });
         }
         setIsMenuOpen(open);
       }}
@@ -6074,6 +6357,14 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       >
         <span className="flex min-w-0 items-center gap-2">
           <ProviderIcon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground/70" />
+          <span
+            aria-label={`${props.provider} ${getProviderConnectionLabel(selectedProviderStatus)}`}
+            className={
+              selectedProviderConnected
+                ? "size-2 shrink-0 rounded-full bg-emerald-500"
+                : "size-2 shrink-0 rounded-full bg-red-500"
+            }
+          />
           {props.provider === "codex" && shouldShowFastTierIcon(props.model, props.serviceTierSetting) ? (
             <ZapIcon className="size-3.5 shrink-0 text-amber-500" />
           ) : null}
@@ -6086,16 +6377,56 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           const OptionIcon = PROVIDER_ICON_BY_PROVIDER[option.value];
           const isDisabledByProviderLock =
             props.lockedProvider !== null && props.lockedProvider !== option.value;
+          const optionProviderStatus = getProviderStatus(props.providerStatuses, option.value);
+          const optionConnected = isProviderConnected(optionProviderStatus);
+          const normalizedQuery = modelQueryByProvider[option.value].trim().toLowerCase();
+          const filteredModelOptions = props.modelOptionsByProvider[option.value].filter(
+            (modelOption) => {
+              if (!normalizedQuery) {
+                return true;
+              }
+              const searchHaystack = `${modelOption.name} ${modelOption.slug}`.toLowerCase();
+              return searchHaystack.includes(normalizedQuery);
+            },
+          );
           return (
-            <MenuSub key={option.value}>
-              <MenuSubTrigger disabled={isDisabledByProviderLock}>
-                <OptionIcon
-                  aria-hidden="true"
-                  className="size-4 shrink-0 text-muted-foreground/85"
-                />
-                {option.label}
-              </MenuSubTrigger>
+              <MenuSub key={option.value}>
+                <MenuSubTrigger disabled={isDisabledByProviderLock}>
+                  <OptionIcon
+                    aria-hidden="true"
+                    className="size-4 shrink-0 text-muted-foreground/85"
+                  />
+                  <span>{option.label}</span>
+                  <span
+                    aria-label={`${option.label} ${getProviderConnectionLabel(optionProviderStatus)}`}
+                    className={
+                      optionConnected
+                        ? "ms-auto size-2 shrink-0 rounded-full bg-emerald-500"
+                        : "ms-auto size-2 shrink-0 rounded-full bg-red-500"
+                    }
+                  />
+                </MenuSubTrigger>
               <MenuSubPopup className="[--available-height:min(24rem,70vh)]">
+                <div className="border-b p-1">
+                  <Input
+                    value={modelQueryByProvider[option.value]}
+                    onChange={(event) =>
+                      setModelQueryByProvider((existing) =>
+                        Object.assign({}, existing, {
+                          [option.value]: event.target.value,
+                        }),
+                      )
+                    }
+                    onKeyDown={(event) => {
+                      event.stopPropagation();
+                    }}
+                    placeholder={
+                      option.value === "opencode" ? "Search OpenCode models..." : "Search models..."
+                    }
+                    spellCheck={false}
+                    className="font-sans"
+                  />
+                </div>
                 <MenuGroup>
                   <MenuRadioGroup
                     value={props.provider === option.value ? props.model : ""}
@@ -6110,14 +6441,18 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
                       );
                       if (!resolvedModel) return;
                       props.onProviderModelChange(option.value, resolvedModel);
+                      setModelQueryByProvider({ codex: "", opencode: "" });
                       setIsMenuOpen(false);
                     }}
                   >
-                    {props.modelOptionsByProvider[option.value].map((modelOption) => (
+                    {filteredModelOptions.map((modelOption) => (
                       <MenuRadioItem
                         key={`${option.value}:${modelOption.slug}`}
                         value={modelOption.slug}
-                        onClick={() => setIsMenuOpen(false)}
+                        onClick={() => {
+                          setModelQueryByProvider({ codex: "", opencode: "" });
+                          setIsMenuOpen(false);
+                        }}
                       >
                         {option.value === "codex" &&
                         shouldShowFastTierIcon(modelOption.slug, props.serviceTierSetting) ? (
@@ -6128,6 +6463,9 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
                     ))}
                   </MenuRadioGroup>
                 </MenuGroup>
+                {filteredModelOptions.length === 0 ? (
+                  <p className="px-3 py-2 text-muted-foreground/70 text-xs">No matching models.</p>
+                ) : null}
               </MenuSubPopup>
             </MenuSub>
           );

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  getAppSettingsSnapshot,
+  getJCodeMunchSettings,
   resolveAppFontScale,
   getAppModelOptions,
   getSlashModelOptions,
@@ -25,6 +27,15 @@ describe("normalizeCustomModelSlugs", () => {
       ]),
     ).toEqual(["custom/internal-model"]);
   });
+
+  it("accepts OpenCode provider/model slugs and stores them in provider:model form", () => {
+    expect(
+      normalizeCustomModelSlugs(
+        [" openrouter/moonshotai/kimi-k2.5 ", "openrouter:moonshotai/kimi-k2.5"],
+        "opencode",
+      ),
+    ).toEqual(["openrouter:moonshotai/kimi-k2.5"]);
+  });
 });
 
 describe("getAppModelOptions", () => {
@@ -47,6 +58,16 @@ describe("getAppModelOptions", () => {
     expect(options.at(-1)).toEqual({
       slug: "custom/selected-model",
       name: "custom/selected-model",
+      isCustom: true,
+    });
+  });
+
+  it("omits the provider prefix from OpenCode model labels", () => {
+    const options = getAppModelOptions("opencode", ["openrouter:moonshotai/kimi-k2.5"]);
+
+    expect(options.at(-1)).toEqual({
+      slug: "openrouter:moonshotai/kimi-k2.5",
+      name: "moonshotai/kimi-k2.5",
       isCustom: true,
     });
   });
@@ -92,6 +113,21 @@ describe("normalizeRemoteBackendProfiles", () => {
         protocol: "ws",
       },
     ]);
+  });
+});
+
+describe("OpenCode delegate settings", () => {
+  it("defaults to showing the OpenRouter delegate", () => {
+    expect(getAppSettingsSnapshot().visibleOpenCodeDelegateIds).toEqual(["openrouter"]);
+  });
+});
+
+describe("JCodeMunch settings", () => {
+  it("default to disabled with no binary path", () => {
+    expect(getJCodeMunchSettings(getAppSettingsSnapshot())).toEqual({
+      enabled: false,
+      binaryPath: null,
+    });
   });
 });
 

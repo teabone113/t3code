@@ -4,7 +4,12 @@ import { Effect, Layer, Sink, Stream } from "effect";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
-import { checkCodexProviderStatus, parseAuthStatusFromOutput } from "./ProviderHealth";
+import {
+  checkCodexProviderStatus,
+  checkOpenCodeProviderStatus,
+  parseAuthStatusFromOutput,
+  parseOpenCodeAuthStatusFromOutput,
+} from "./ProviderHealth";
 
 // ── Test helpers ────────────────────────────────────────────────────
 
@@ -161,6 +166,61 @@ it.effect("returns warning when login status command is unsupported", () =>
   ),
 );
 
+it.effect("returns ready when opencode is installed and has configured credentials", () =>
+  Effect.gen(function* () {
+    const status = yield* checkOpenCodeProviderStatus;
+    assert.strictEqual(status.provider, "opencode");
+    assert.strictEqual(status.status, "ready");
+    assert.strictEqual(status.available, true);
+    assert.strictEqual(status.authStatus, "authenticated");
+    assert.strictEqual(status.message, "OpenCode credentials configured: OpenRouter.");
+  }).pipe(
+    Effect.provide(
+      mockSpawnerLayer((args) => {
+        const joined = args.join(" ");
+        if (joined === "--version") return { stdout: "opencode 1.2.24\n", stderr: "", code: 0 };
+        if (joined === "auth list") {
+          return {
+            stdout: "●  OpenRouter api\n└  1 credentials\n",
+            stderr: "",
+            code: 0,
+          };
+        }
+        throw new Error(`Unexpected args: ${joined}`);
+      }),
+    ),
+  ),
+);
+
+it.effect("returns unauthenticated when opencode has no configured credentials", () =>
+  Effect.gen(function* () {
+    const status = yield* checkOpenCodeProviderStatus;
+    assert.strictEqual(status.provider, "opencode");
+    assert.strictEqual(status.status, "warning");
+    assert.strictEqual(status.available, true);
+    assert.strictEqual(status.authStatus, "unauthenticated");
+    assert.strictEqual(
+      status.message,
+      "OpenCode is installed but no delegated provider credentials are configured.",
+    );
+  }).pipe(
+    Effect.provide(
+      mockSpawnerLayer((args) => {
+        const joined = args.join(" ");
+        if (joined === "--version") return { stdout: "opencode 1.2.24\n", stderr: "", code: 0 };
+        if (joined === "auth list") {
+          return {
+            stdout: "└  0 credentials\n",
+            stderr: "",
+            code: 0,
+          };
+        }
+        throw new Error(`Unexpected args: ${joined}`);
+      }),
+    ),
+  ),
+);
+
 // ── Pure function tests ─────────────────────────────────────────────
 
 it("parseAuthStatusFromOutput: exit code 0 with no auth markers is ready", () => {
@@ -187,4 +247,25 @@ it("parseAuthStatusFromOutput: JSON without auth marker is warning", () => {
   });
   assert.strictEqual(parsed.status, "warning");
   assert.strictEqual(parsed.authStatus, "unknown");
+});
+
+it("parseOpenCodeAuthStatusFromOutput: ignores placeholder credentials and reports configured providers", () => {
+  const parsed = parseOpenCodeAuthStatusFromOutput({
+    stdout: "●  {id} api\n●  OpenRouter api\n└  2 credentials\n",
+    stderr: "",
+    code: 0,
+  });
+  assert.strictEqual(parsed.status, "ready");
+  assert.strictEqual(parsed.authStatus, "authenticated");
+  assert.strictEqual(parsed.message, "OpenCode credentials configured: OpenRouter.");
+});
+
+it("parseOpenCodeAuthStatusFromOutput: zero credentials is unauthenticated", () => {
+  const parsed = parseOpenCodeAuthStatusFromOutput({
+    stdout: "└  0 credentials\n",
+    stderr: "",
+    code: 0,
+  });
+  assert.strictEqual(parsed.status, "warning");
+  assert.strictEqual(parsed.authStatus, "unauthenticated");
 });

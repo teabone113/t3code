@@ -170,12 +170,17 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
       const directoryLayer = makeDirectoryLayer(makeSqlitePersistenceLive(dbPath));
 
       const threadId = ThreadId.makeUnsafe("thread-restart");
+      const openCodeThreadId = ThreadId.makeUnsafe("thread-restart-opencode");
 
       yield* Effect.gen(function* () {
         const directory = yield* ProviderSessionDirectory;
         yield* directory.upsert({
           provider: "codex",
           threadId,
+        });
+        yield* directory.upsert({
+          provider: "opencode",
+          threadId: openCodeThreadId,
         });
       }).pipe(Effect.provide(directoryLayer));
 
@@ -192,6 +197,18 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
         });
         if (Option.isSome(resolvedBinding)) {
           assert.equal(resolvedBinding.value.threadId, threadId);
+        }
+
+        const openCodeProvider = yield* directory.getProvider(openCodeThreadId);
+        assert.equal(openCodeProvider, "opencode");
+
+        const openCodeBinding = yield* directory.getBinding(openCodeThreadId);
+        assertSome(openCodeBinding, {
+          threadId: openCodeThreadId,
+          provider: "opencode",
+        });
+        if (Option.isSome(openCodeBinding)) {
+          assert.equal(openCodeBinding.value.threadId, openCodeThreadId);
         }
 
         const legacyTableRows = yield* sql<{ readonly name: string }>`

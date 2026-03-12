@@ -93,7 +93,7 @@ describe("ProviderCommandReactor", () => {
         typeof input === "object" &&
         input !== null &&
         "provider" in input &&
-        input.provider === "codex"
+        (input.provider === "codex" || input.provider === "opencode")
           ? input.provider
           : "codex";
       const resumeCursor =
@@ -342,6 +342,51 @@ describe("ProviderCommandReactor", () => {
           fastMode: true,
         },
       },
+    });
+  });
+
+  it("forwards provider start options through session start", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-turn-start-provider-options"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-provider-options"),
+          role: "user",
+          text: "hello open code",
+          attachments: [],
+        },
+        provider: "opencode",
+        model: "openrouter:openai/gpt-4.1-mini",
+        providerOptions: {
+          opencode: {
+            binaryPath: "/opt/homebrew/bin/opencode",
+          },
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+      provider: "opencode",
+      model: "openrouter:openai/gpt-4.1-mini",
+      providerOptions: {
+        opencode: {
+          binaryPath: "/opt/homebrew/bin/opencode",
+        },
+      },
+    });
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      model: "openrouter:openai/gpt-4.1-mini",
     });
   });
 

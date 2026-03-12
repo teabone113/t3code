@@ -24,11 +24,14 @@
   "dependencies": {
     "@effect/platform-node": "catalog:",
     "@effect/sql-sqlite-bun": "catalog:",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@opencode-ai/sdk": "^1.2.24",
     "@pierre/diffs": "^1.1.0-beta.16",
     "effect": "catalog:",
     "node-pty": "^1.1.0",
     "open": "^10.1.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@effect/language-service": "catalog:",

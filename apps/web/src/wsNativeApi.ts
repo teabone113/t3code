@@ -143,6 +143,7 @@ export function createWsNativeApi(): NativeApi {
     projects: {
       searchEntries: (input) => transport.request(WS_METHODS.projectsSearchEntries, input),
       writeFile: (input) => transport.request(WS_METHODS.projectsWriteFile, input),
+      buildContext: (input) => transport.request(WS_METHODS.projectsBuildContext, input),
     },
     shell: {
       openInEditor: (cwd, editor) =>
@@ -190,6 +191,12 @@ export function createWsNativeApi(): NativeApi {
     server: {
       getConfig: () => transport.request(WS_METHODS.serverGetConfig),
       upsertKeybinding: (input) => transport.request(WS_METHODS.serverUpsertKeybinding, input),
+    },
+    provider: {
+      getCatalog: (input) => transport.request(WS_METHODS.providerGetCatalog, input),
+      setApiKeyAuth: (input) => transport.request(WS_METHODS.providerSetApiKeyAuth, input),
+      startOauth: (input) => transport.request(WS_METHODS.providerStartOauth, input),
+      completeOauth: (input) => transport.request(WS_METHODS.providerCompleteOauth, input),
     },
     orchestration: {
       getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),

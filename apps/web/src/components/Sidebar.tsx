@@ -388,7 +388,7 @@ export default function Sidebar() {
           if (routeThreadId === storedDraftThread.threadId) {
             return;
           }
-          await navigate({
+          void navigate({
             to: "/$threadId",
             params: { threadId: storedDraftThread.threadId },
           });
@@ -419,7 +419,7 @@ export default function Sidebar() {
           runtimeMode: DEFAULT_RUNTIME_MODE,
         });
 
-        await navigate({
+        void navigate({
           to: "/$threadId",
           params: { threadId },
         });
@@ -471,6 +471,10 @@ export default function Sidebar() {
 
       const existing = projects.find((project) => project.cwd === cwd);
       if (existing) {
+        console.info("[add-project] project already exists", {
+          cwd,
+          projectId: existing.id,
+        });
         focusMostRecentThreadForProject(existing.id);
         finishAddingProject();
         return;
@@ -480,6 +484,13 @@ export default function Sidebar() {
       const createdAt = new Date().toISOString();
       const title = cwd.split(/[/\\]/).findLast(isNonEmptyString) ?? cwd;
       try {
+        console.info("[add-project] dispatching project.create", {
+          commandType: "project.create",
+          createdAt,
+          cwd,
+          projectId,
+          title,
+        });
         await api.orchestration.dispatchCommand({
           type: "project.create",
           commandId: newCommandId(),
@@ -489,18 +500,30 @@ export default function Sidebar() {
           defaultModel: DEFAULT_MODEL_BY_PROVIDER.codex,
           createdAt,
         });
-        await handleNewThread(projectId).catch(() => undefined);
+        console.info("[add-project] project.create resolved", {
+          cwd,
+          projectId,
+        });
+        void handleNewThread(projectId).catch(() => undefined);
+        console.info("[add-project] scheduled draft thread navigation", {
+          cwd,
+          projectId,
+        });
       } catch (error) {
-        setIsAddingProject(false);
+        console.error("[add-project] project.create failed", {
+          cwd,
+          error,
+          projectId,
+        });
         toastManager.add({
           type: "error",
           title: "Unable to add project",
           description:
             error instanceof Error ? error.message : "An error occurred while adding the project.",
         });
-        return;
+      } finally {
+        finishAddingProject();
       }
-      finishAddingProject();
     },
     [focusMostRecentThreadForProject, handleNewThread, isAddingProject, projects],
   );

@@ -30,8 +30,18 @@ import {
   TerminalWriteInput,
 } from "./terminal";
 import { KeybindingRule } from "./keybindings";
-import { ProjectSearchEntriesInput, ProjectWriteFileInput } from "./project";
+import {
+  ProjectBuildContextInput,
+  ProjectSearchEntriesInput,
+  ProjectWriteFileInput,
+} from "./project";
 import { OpenInEditorInput, OpenInTerminalInput, OpenPathWithPreferencesInput } from "./editor";
+import {
+  ProviderCatalogQuery,
+  ProviderCompleteOauthInput,
+  ProviderSetApiKeyAuthInput,
+  ProviderStartOauthInput,
+} from "./providerAdmin";
 
 // ── WebSocket RPC Method Names ───────────────────────────────────────
 
@@ -42,6 +52,7 @@ export const WS_METHODS = {
   projectsRemove: "projects.remove",
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
+  projectsBuildContext: "projects.buildContext",
 
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
@@ -70,6 +81,12 @@ export const WS_METHODS = {
   // Server meta
   serverGetConfig: "server.getConfig",
   serverUpsertKeybinding: "server.upsertKeybinding",
+
+  // Provider admin
+  providerGetCatalog: "provider.getCatalog",
+  providerSetApiKeyAuth: "provider.setApiKeyAuth",
+  providerStartOauth: "provider.startOauth",
+  providerCompleteOauth: "provider.completeOauth",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────
@@ -107,6 +124,7 @@ const WebSocketRequestBody = Schema.Union([
   // Project Search
   tagRequestBody(WS_METHODS.projectsSearchEntries, ProjectSearchEntriesInput),
   tagRequestBody(WS_METHODS.projectsWriteFile, ProjectWriteFileInput),
+  tagRequestBody(WS_METHODS.projectsBuildContext, ProjectBuildContextInput),
 
   // Shell methods
   tagRequestBody(WS_METHODS.shellOpenInEditor, OpenInEditorInput),
@@ -135,6 +153,12 @@ const WebSocketRequestBody = Schema.Union([
   // Server meta
   tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
+
+  // Provider admin
+  tagRequestBody(WS_METHODS.providerGetCatalog, ProviderCatalogQuery),
+  tagRequestBody(WS_METHODS.providerSetApiKeyAuth, ProviderSetApiKeyAuthInput),
+  tagRequestBody(WS_METHODS.providerStartOauth, ProviderStartOauthInput),
+  tagRequestBody(WS_METHODS.providerCompleteOauth, ProviderCompleteOauthInput),
 ]);
 
 export const WebSocketRequest = Schema.Struct({

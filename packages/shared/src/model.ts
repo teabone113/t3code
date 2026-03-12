@@ -12,6 +12,7 @@ type CatalogProvider = keyof typeof MODEL_OPTIONS_BY_PROVIDER;
 
 const MODEL_SLUG_SET_BY_PROVIDER: Record<CatalogProvider, ReadonlySet<ModelSlug>> = {
   codex: new Set(MODEL_OPTIONS_BY_PROVIDER.codex.map((option) => option.slug)),
+  opencode: new Set<ModelSlug>(),
 };
 
 export function getModelOptions(provider: ProviderKind = "codex") {
@@ -20,6 +21,20 @@ export function getModelOptions(provider: ProviderKind = "codex") {
 
 export function getDefaultModel(provider: ProviderKind = "codex"): ModelSlug {
   return DEFAULT_MODEL_BY_PROVIDER[provider];
+}
+
+function normalizeOpenCodeModelSlug(model: string): string {
+  const colonIndex = model.indexOf(":");
+  if (colonIndex > 0 && colonIndex < model.length - 1) {
+    return model;
+  }
+
+  const slashIndex = model.indexOf("/");
+  if (slashIndex > 0 && slashIndex < model.length - 1) {
+    return `${model.slice(0, slashIndex)}:${model.slice(slashIndex + 1)}`;
+  }
+
+  return model;
 }
 
 export function normalizeModelSlug(
@@ -35,9 +50,11 @@ export function normalizeModelSlug(
     return null;
   }
 
+  const providerNormalized = provider === "opencode" ? normalizeOpenCodeModelSlug(trimmed) : trimmed;
+
   const aliases = MODEL_SLUG_ALIASES_BY_PROVIDER[provider] as Record<string, ModelSlug>;
-  const aliased = aliases[trimmed];
-  return typeof aliased === "string" ? aliased : (trimmed as ModelSlug);
+  const aliased = aliases[providerNormalized];
+  return typeof aliased === "string" ? aliased : (providerNormalized as ModelSlug);
 }
 
 export function resolveModelSlug(
@@ -59,6 +76,30 @@ export function resolveModelSlugForProvider(
   model: string | null | undefined,
 ): ModelSlug {
   return resolveModelSlug(model, provider);
+}
+
+export function isOpenCodeModelSlug(model: string | null | undefined): boolean {
+  const normalized = normalizeModelSlug(model, "opencode");
+  if (!normalized) {
+    return false;
+  }
+
+  const separatorIndex = normalized.indexOf(":");
+  return separatorIndex > 0 && separatorIndex < normalized.length - 1;
+}
+
+export function getOpenCodeModelDisplayName(model: string | null | undefined): string {
+  const normalized = normalizeModelSlug(model, "opencode");
+  if (!normalized) {
+    return "";
+  }
+
+  const separatorIndex = normalized.indexOf(":");
+  if (separatorIndex <= 0 || separatorIndex === normalized.length - 1) {
+    return normalized;
+  }
+
+  return normalized.slice(separatorIndex + 1);
 }
 
 export function getReasoningEffortOptions(

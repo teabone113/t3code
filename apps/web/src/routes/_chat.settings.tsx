@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   BackendSelection,
   EDITORS,
@@ -12,7 +12,7 @@ import {
   type RemoteBackendProfile,
 } from "@t3tools/contracts";
 import { getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
-import { ZapIcon } from "lucide-react";
+import { PlusIcon, Trash2Icon, ZapIcon } from "lucide-react";
 
 import {
   APP_FONT_SCALE_OPTIONS,
@@ -29,11 +29,25 @@ import { discoverBackends, supportsBackendDiscovery } from "../backendDiscovery"
 import { buildRemoteBackendWsUrl, resolveBackendConnection } from "../backendConnection";
 import { isCapacitorShell, isElectron } from "../env";
 import { useTheme } from "../hooks/useTheme";
+import { providerCatalogQueryOptions } from "../lib/providerCatalogReactQuery";
+import {
+  getProviderConnectionLabel,
+  getProviderStatus,
+  isProviderConnected,
+} from "../lib/providerStatus";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { isMacPlatform, isWindowsPlatform } from "../lib/utils";
 import { ensureNativeApi, resetNativeApi } from "../nativeApi";
 import { preferredPathOpenInput } from "../terminal-links";
 import { Button } from "../components/ui/button";
+import {
+  Dialog,
+  DialogDescription,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import {
   Select,
@@ -63,6 +77,7 @@ const THEME_OPTIONS = [
   },
 ] as const;
 const AUTO_OPEN_TOOL_VALUE = "__auto__";
+const EMPTY_PROVIDER_STATUSES = [] as const;
 const APPEARANCE_FONT_CONTEXT_OPTIONS: Array<{
   key: "uiFontScale" | "contentFontScale" | "monoFontScale";
   label: string;
@@ -187,6 +202,9 @@ function getCustomModelsForProvider(
 ) {
   switch (provider) {
     case "codex":
+      return settings.customCodexModels;
+    case "opencode":
+      return settings.customOpenCodeModels;
     default:
       return settings.customCodexModels;
   }
@@ -198,6 +216,9 @@ function getDefaultCustomModelsForProvider(
 ) {
   switch (provider) {
     case "codex":
+      return defaults.customCodexModels;
+    case "opencode":
+      return defaults.customOpenCodeModels;
     default:
       return defaults.customCodexModels;
   }
@@ -206,25 +227,95 @@ function getDefaultCustomModelsForProvider(
 function patchCustomModels(provider: ProviderKind, models: string[]) {
   switch (provider) {
     case "codex":
+      return { customCodexModels: models };
+    case "opencode":
+      return { customOpenCodeModels: models };
     default:
       return { customCodexModels: models };
   }
 }
 
+const OPENROUTER_MODEL_PREFIX = "openrouter:";
+
+function formatOpenRouterModelInput(rawSlug: string): string {
+  const trimmed = rawSlug.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  const withoutProviderPrefix =
+    trimmed.startsWith(OPENROUTER_MODEL_PREFIX)
+      ? trimmed.slice(OPENROUTER_MODEL_PREFIX.length)
+      : trimmed.startsWith("openrouter/")
+        ? trimmed.slice("openrouter/".length)
+        : trimmed;
+  const providerSeparatorIndex = withoutProviderPrefix.indexOf(":");
+  const normalizedBareSlug =
+    providerSeparatorIndex > 0 && providerSeparatorIndex < withoutProviderPrefix.length - 1
+      ? `${withoutProviderPrefix.slice(0, providerSeparatorIndex)}/${withoutProviderPrefix.slice(
+          providerSeparatorIndex + 1,
+        )}`
+      : withoutProviderPrefix;
+  return `${OPENROUTER_MODEL_PREFIX}${normalizedBareSlug}`;
+}
+
+function stripOpenRouterModelPrefix(slug: string): string {
+  const withoutPrefix = slug.startsWith(OPENROUTER_MODEL_PREFIX)
+    ? slug.slice(OPENROUTER_MODEL_PREFIX.length)
+    : slug;
+  const providerSeparatorIndex = withoutPrefix.indexOf("/");
+  return providerSeparatorIndex > 0 && providerSeparatorIndex < withoutPrefix.length - 1
+    ? `${withoutPrefix.slice(0, providerSeparatorIndex)}:${withoutPrefix.slice(
+        providerSeparatorIndex + 1,
+      )}`
+    : withoutPrefix;
+}
+
+function ProviderConnectionBadge(props: { connected: boolean; label: string }) {
+  return (
+    <span
+      className={
+        props.connected
+          ? "inline-flex items-center gap-2 rounded-full bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-600"
+          : "inline-flex items-center gap-2 rounded-full bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-600"
+      }
+    >
+      <span
+        aria-hidden="true"
+        className={props.connected ? "size-2 rounded-full bg-emerald-500" : "size-2 rounded-full bg-red-500"}
+      />
+      {props.label}
+    </span>
+  );
+}
+
 function SettingsRouteView() {
   const { theme, setTheme, resolvedTheme } = useTheme();
   const { settings, defaults, updateSettings } = useAppSettings();
+  const queryClient = useQueryClient();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
+  const openCodeCatalogQuery = useQuery(
+    providerCatalogQueryOptions({
+      provider: "opencode",
+      cwd: serverConfigQuery.data?.cwd ?? null,
+      binaryPath: settings.opencodeBinaryPath || null,
+      enabled: !!serverConfigQuery.data,
+    }),
+  );
   const [isOpeningKeybindings, setIsOpeningKeybindings] = useState(false);
   const [openKeybindingsError, setOpenKeybindingsError] = useState<string | null>(null);
   const [customModelInputByProvider, setCustomModelInputByProvider] = useState<
     Record<ProviderKind, string>
   >({
     codex: "",
+    opencode: "",
   });
+  const [openRouterModelInput, setOpenRouterModelInput] = useState("");
   const [customModelErrorByProvider, setCustomModelErrorByProvider] = useState<
     Partial<Record<ProviderKind, string | null>>
   >({});
+  const [openRouterModelError, setOpenRouterModelError] = useState<string | null>(null);
+  const [isAddOpenCodeDelegateDialogOpen, setIsAddOpenCodeDelegateDialogOpen] = useState(false);
+  const [openCodeDelegateSearchQuery, setOpenCodeDelegateSearchQuery] = useState("");
   const [remoteProfileName, setRemoteProfileName] = useState("");
   const [remoteProfileHost, setRemoteProfileHost] = useState("");
   const [remoteProfilePort, setRemoteProfilePort] = useState("3773");
@@ -234,14 +325,76 @@ function SettingsRouteView() {
   const [discoveredBackends, setDiscoveredBackends] = useState<DiscoveredBackend[]>([]);
   const [isDiscoveringBackends, setIsDiscoveringBackends] = useState(false);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const [openCodeApiKeysByProvider, setOpenCodeApiKeysByProvider] = useState<Record<string, string>>(
+    {},
+  );
+  const [openCodeOauthCodesByProvider, setOpenCodeOauthCodesByProvider] = useState<
+    Record<string, string>
+  >({});
+  const [openCodeConnectedOverrideByProvider, setOpenCodeConnectedOverrideByProvider] = useState<
+    Record<string, boolean>
+  >({});
+  const [openCodeAuthErrorByProvider, setOpenCodeAuthErrorByProvider] = useState<
+    Record<string, string | null>
+  >({});
+  const [openCodeAuthBusyByProvider, setOpenCodeAuthBusyByProvider] = useState<
+    Record<string, boolean>
+  >({});
 
   const codexBinaryPath = settings.codexBinaryPath;
   const codexHomePath = settings.codexHomePath;
   const codexServiceTier = settings.codexServiceTier;
+  const openCodeBinaryPath = settings.opencodeBinaryPath;
+  const jcodemunchEnabled = settings.jcodemunchEnabled;
+  const jcodemunchBinaryPath = settings.jcodemunchBinaryPath;
   const keybindingsConfigPath = serverConfigQuery.data?.keybindingsConfigPath ?? null;
   const availableEditors = serverConfigQuery.data?.availableEditors ?? [];
   const availableTerminalApps = serverConfigQuery.data?.availableTerminalApps ?? [];
+  const providerStatuses = serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES;
   const platform = typeof navigator === "undefined" ? "" : navigator.platform;
+  const codexProviderStatus = getProviderStatus(providerStatuses, "codex");
+  const openCodeProviderStatus = getProviderStatus(providerStatuses, "opencode");
+  const openCodeDelegatedProviders = useMemo(
+    () =>
+      (openCodeCatalogQuery.data?.delegatedProviders ?? []).map((provider) =>
+        Object.assign({}, provider, {
+          connected: provider.connected || Boolean(openCodeConnectedOverrideByProvider[provider.id]),
+        }),
+      ),
+    [openCodeCatalogQuery.data?.delegatedProviders, openCodeConnectedOverrideByProvider],
+  );
+  const visibleOpenCodeDelegateIds = settings.visibleOpenCodeDelegateIds;
+  const visibleOpenCodeDelegatedProviders = useMemo(
+    () =>
+      openCodeDelegatedProviders.filter((provider) =>
+        visibleOpenCodeDelegateIds.includes(provider.id),
+      ),
+    [openCodeDelegatedProviders, visibleOpenCodeDelegateIds],
+  );
+  const availableOpenCodeDelegatedProviders = useMemo(
+    () =>
+      openCodeDelegatedProviders.filter(
+        (provider) => !visibleOpenCodeDelegateIds.includes(provider.id),
+      ),
+    [openCodeDelegatedProviders, visibleOpenCodeDelegateIds],
+  );
+  const filteredAvailableOpenCodeDelegatedProviders = useMemo(() => {
+    const normalizedQuery = openCodeDelegateSearchQuery.trim().toLowerCase();
+    if (!normalizedQuery) {
+      return availableOpenCodeDelegatedProviders;
+    }
+    return availableOpenCodeDelegatedProviders.filter((provider) => {
+      const searchHaystack = `${provider.name} ${provider.id}`.toLowerCase();
+      return searchHaystack.includes(normalizedQuery);
+    });
+  }, [availableOpenCodeDelegatedProviders, openCodeDelegateSearchQuery]);
+  const openCodeModelCount = openCodeCatalogQuery.data?.models.length ?? 0;
+  const openRouterCustomModels = settings.customOpenCodeModels.filter((slug) =>
+    slug.startsWith(OPENROUTER_MODEL_PREFIX),
+  );
+  const openRouterProviderConnected = openCodeDelegatedProviders.some(
+    (provider) => provider.id === "openrouter" && provider.connected,
+  );
   const availableFileToolOptions = availableEditors
     .filter((editor) => editor !== "file-manager")
     .map((editor) => ({
@@ -258,6 +411,110 @@ function SettingsRouteView() {
       label: resolveOpenToolLabel(terminal, platform),
     })),
   ];
+
+  const refreshOpenCodeCatalog = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: ["providerCatalog"] });
+    await openCodeCatalogQuery.refetch();
+  }, [openCodeCatalogQuery, queryClient]);
+
+  const withOpenCodeAuthBusy = useCallback(
+    async (providerId: string, action: () => Promise<void>): Promise<boolean> => {
+      setOpenCodeAuthBusyByProvider((existing) => ({ ...existing, [providerId]: true }));
+      setOpenCodeAuthErrorByProvider((existing) => ({ ...existing, [providerId]: null }));
+      try {
+        await action();
+        await refreshOpenCodeCatalog();
+        return true;
+      } catch (error) {
+        setOpenCodeAuthErrorByProvider((existing) => ({
+          ...existing,
+          [providerId]: error instanceof Error ? error.message : "OpenCode auth request failed.",
+        }));
+        return false;
+      } finally {
+        setOpenCodeAuthBusyByProvider((existing) => ({ ...existing, [providerId]: false }));
+      }
+    },
+    [refreshOpenCodeCatalog],
+  );
+
+  const saveOpenCodeApiKey = useCallback(
+    async (providerId: string) => {
+      const apiKey = openCodeApiKeysByProvider[providerId]?.trim() ?? "";
+      if (!apiKey) {
+        setOpenCodeAuthErrorByProvider((existing) => ({
+          ...existing,
+          [providerId]: "Enter an API key.",
+        }));
+        return;
+      }
+      const api = ensureNativeApi();
+      const connected = await withOpenCodeAuthBusy(providerId, async () => {
+        await api.provider.setApiKeyAuth({
+          provider: "opencode",
+          delegatedProviderId: providerId,
+          ...(serverConfigQuery.data?.cwd ? { cwd: serverConfigQuery.data.cwd } : {}),
+          ...(openCodeBinaryPath ? { binaryPath: openCodeBinaryPath } : {}),
+          apiKey,
+        });
+      });
+      if (connected) {
+        setOpenCodeConnectedOverrideByProvider((existing) => ({ ...existing, [providerId]: true }));
+      }
+    },
+    [openCodeApiKeysByProvider, openCodeBinaryPath, serverConfigQuery.data?.cwd, withOpenCodeAuthBusy],
+  );
+
+  const startOpenCodeOauth = useCallback(
+    async (providerId: string, methodIndex: number) => {
+      const api = ensureNativeApi();
+      await withOpenCodeAuthBusy(providerId, async () => {
+        const result = await api.provider.startOauth({
+          provider: "opencode",
+          delegatedProviderId: providerId,
+          methodIndex,
+          ...(serverConfigQuery.data?.cwd ? { cwd: serverConfigQuery.data.cwd } : {}),
+          ...(openCodeBinaryPath ? { binaryPath: openCodeBinaryPath } : {}),
+        });
+        await api.shell.openExternal(result.url);
+        if (result.method === "code") {
+          setOpenCodeAuthErrorByProvider((existing) => ({
+            ...existing,
+            [providerId]: result.instructions,
+          }));
+        }
+      });
+    },
+    [openCodeBinaryPath, serverConfigQuery.data?.cwd, withOpenCodeAuthBusy],
+  );
+
+  const completeOpenCodeOauth = useCallback(
+    async (providerId: string, methodIndex: number) => {
+      const code = openCodeOauthCodesByProvider[providerId]?.trim() ?? "";
+      if (!code) {
+        setOpenCodeAuthErrorByProvider((existing) => ({
+          ...existing,
+          [providerId]: "Enter the OAuth code returned by the provider.",
+        }));
+        return;
+      }
+      const api = ensureNativeApi();
+      const connected = await withOpenCodeAuthBusy(providerId, async () => {
+        await api.provider.completeOauth({
+          provider: "opencode",
+          delegatedProviderId: providerId,
+          methodIndex,
+          code,
+          ...(serverConfigQuery.data?.cwd ? { cwd: serverConfigQuery.data.cwd } : {}),
+          ...(openCodeBinaryPath ? { binaryPath: openCodeBinaryPath } : {}),
+        });
+      });
+      if (connected) {
+        setOpenCodeConnectedOverrideByProvider((existing) => ({ ...existing, [providerId]: true }));
+      }
+    },
+    [openCodeBinaryPath, openCodeOauthCodesByProvider, serverConfigQuery.data?.cwd, withOpenCodeAuthBusy],
+  );
   const remoteBackendProfiles = settings.remoteBackendProfiles;
   const activeBackendConnection = resolveBackendConnection();
   const startupRole = window.desktopBridge?.getStartupRole?.() ?? null;
@@ -427,41 +684,43 @@ function SettingsRouteView() {
     void refreshDiscoveredBackends();
   }, [discoverySupported, refreshDiscoveredBackends]);
 
-  const addCustomModel = useCallback(
-    (provider: ProviderKind) => {
-      const customModelInput = customModelInputByProvider[provider];
+  const saveCustomModelSlug = useCallback(
+    (provider: ProviderKind, rawSlug: string): { ok: true; slug: string } | { ok: false; message: string } => {
       const customModels = getCustomModelsForProvider(settings, provider);
-      const normalized = normalizeModelSlug(customModelInput, provider);
+      const normalized = normalizeModelSlug(rawSlug, provider);
       if (!normalized) {
-        setCustomModelErrorByProvider((existing) => ({
-          ...existing,
-          [provider]: "Enter a model slug.",
-        }));
-        return;
+        return { ok: false, message: "Enter a model slug." };
       }
       if (getModelOptions(provider).some((option) => option.slug === normalized)) {
-        setCustomModelErrorByProvider((existing) => ({
-          ...existing,
-          [provider]: "That model is already built in.",
-        }));
-        return;
+        return { ok: false, message: "That model is already built in." };
       }
       if (normalized.length > MAX_CUSTOM_MODEL_LENGTH) {
-        setCustomModelErrorByProvider((existing) => ({
-          ...existing,
-          [provider]: `Model slugs must be ${MAX_CUSTOM_MODEL_LENGTH} characters or less.`,
-        }));
-        return;
+        return {
+          ok: false,
+          message: `Model slugs must be ${MAX_CUSTOM_MODEL_LENGTH} characters or less.`,
+        };
       }
       if (customModels.includes(normalized)) {
-        setCustomModelErrorByProvider((existing) => ({
-          ...existing,
-          [provider]: "That custom model is already saved.",
-        }));
-        return;
+        return { ok: false, message: "That custom model is already saved." };
       }
 
       updateSettings(patchCustomModels(provider, [...customModels, normalized]));
+      return { ok: true, slug: normalized };
+    },
+    [settings, updateSettings],
+  );
+
+  const addCustomModel = useCallback(
+    (provider: ProviderKind) => {
+      const customModelInput = customModelInputByProvider[provider];
+      const result = saveCustomModelSlug(provider, customModelInput);
+      if (!result.ok) {
+        setCustomModelErrorByProvider((existing) => ({
+          ...existing,
+          [provider]: result.message,
+        }));
+        return;
+      }
       setCustomModelInputByProvider((existing) => ({
         ...existing,
         [provider]: "",
@@ -471,8 +730,18 @@ function SettingsRouteView() {
         [provider]: null,
       }));
     },
-    [customModelInputByProvider, settings, updateSettings],
+    [customModelInputByProvider, saveCustomModelSlug],
   );
+
+  const addOpenRouterModel = useCallback(() => {
+    const result = saveCustomModelSlug("opencode", formatOpenRouterModelInput(openRouterModelInput));
+    if (!result.ok) {
+      setOpenRouterModelError(result.message);
+      return;
+    }
+    setOpenRouterModelInput("");
+    setOpenRouterModelError(null);
+  }, [openRouterModelInput, saveCustomModelSlug]);
 
   const removeCustomModel = useCallback(
     (provider: ProviderKind, slug: string) => {
@@ -489,6 +758,40 @@ function SettingsRouteView() {
       }));
     },
     [settings, updateSettings],
+  );
+
+  const addOpenCodeDelegate = useCallback(
+    (providerId: string) => {
+      const normalizedProviderId = providerId.trim();
+      if (!normalizedProviderId || settings.visibleOpenCodeDelegateIds.includes(normalizedProviderId)) {
+        return;
+      }
+      updateSettings({
+        visibleOpenCodeDelegateIds: [...settings.visibleOpenCodeDelegateIds, normalizedProviderId],
+      });
+      setIsAddOpenCodeDelegateDialogOpen(false);
+      setOpenCodeDelegateSearchQuery("");
+    },
+    [settings.visibleOpenCodeDelegateIds, updateSettings],
+  );
+
+  const removeOpenCodeDelegate = useCallback(
+    (providerId: string) => {
+      updateSettings({
+        visibleOpenCodeDelegateIds: settings.visibleOpenCodeDelegateIds.filter(
+          (candidateId) => candidateId !== providerId,
+        ),
+      });
+    },
+    [settings.visibleOpenCodeDelegateIds, updateSettings],
+  );
+
+  const removeOpenRouterModel = useCallback(
+    (slug: string) => {
+      removeCustomModel("opencode", slug);
+      setOpenRouterModelError(null);
+    },
+    [removeCustomModel],
   );
 
   return (
@@ -805,6 +1108,71 @@ function SettingsRouteView() {
               </div>
             </section>
 
+            <Dialog
+              open={isAddOpenCodeDelegateDialogOpen}
+              onOpenChange={(open) => {
+                setIsAddOpenCodeDelegateDialogOpen(open);
+                if (!open) {
+                  setOpenCodeDelegateSearchQuery("");
+                }
+              }}
+            >
+              <DialogPopup>
+                <DialogHeader>
+                  <DialogTitle>Add OpenCode Delegate</DialogTitle>
+                  <DialogDescription>
+                    Search the OpenCode provider catalog and add only the delegates you want to manage in Preferences.
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogPanel className="space-y-4">
+                  <label htmlFor="opencode-delegate-search" className="block space-y-1">
+                    <span className="text-xs font-medium text-foreground">Search delegates</span>
+                    <Input
+                      id="opencode-delegate-search"
+                      value={openCodeDelegateSearchQuery}
+                      onChange={(event) => setOpenCodeDelegateSearchQuery(event.target.value)}
+                      placeholder="Search by provider name or ID"
+                      spellCheck={false}
+                    />
+                  </label>
+
+                  <div className="max-h-96 space-y-2 overflow-y-auto">
+                    {filteredAvailableOpenCodeDelegatedProviders.map((provider) => (
+                      <button
+                        key={provider.id}
+                        type="button"
+                        className="flex w-full items-center justify-between gap-3 rounded-xl border border-border bg-background/60 px-4 py-3 text-left transition hover:bg-accent"
+                        onClick={() => addOpenCodeDelegate(provider.id)}
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-medium text-foreground">
+                              {provider.name}
+                            </span>
+                            {provider.connected ? (
+                              <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600">
+                                Connected
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="mt-1 truncate text-xs text-muted-foreground">
+                            Provider ID: <code>{provider.id}</code>
+                          </p>
+                        </div>
+                        <span className="shrink-0 text-xs font-medium text-foreground">Add</span>
+                      </button>
+                    ))}
+
+                    {filteredAvailableOpenCodeDelegatedProviders.length === 0 ? (
+                      <div className="rounded-lg border border-dashed border-border px-3 py-4 text-xs text-muted-foreground">
+                        No matching delegates found.
+                      </div>
+                    ) : null}
+                  </div>
+                </DialogPanel>
+              </DialogPopup>
+            </Dialog>
+
             <section className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-4">
                 <h2 className="text-sm font-medium text-foreground">Appearance</h2>
@@ -882,11 +1250,17 @@ function SettingsRouteView() {
             </section>
 
             <section className="rounded-2xl border border-border bg-card p-5">
-              <div className="mb-4">
-                <h2 className="text-sm font-medium text-foreground">Codex App Server</h2>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  These overrides apply to new sessions and let you use a non-default Codex install.
-                </p>
+              <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-medium text-foreground">Codex App Server</h2>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    These overrides apply to new sessions and let you use a non-default Codex install.
+                  </p>
+                </div>
+                <ProviderConnectionBadge
+                  connected={isProviderConnected(codexProviderStatus)}
+                  label={getProviderConnectionLabel(codexProviderStatus)}
+                />
               </div>
 
               <div className="space-y-4">
@@ -940,11 +1314,289 @@ function SettingsRouteView() {
             </section>
 
             <section className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-medium text-foreground">OpenCode</h2>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Configure the OpenCode binary and delegated provider auth, including OpenRouter.
+                  </p>
+                </div>
+                <ProviderConnectionBadge
+                  connected={isProviderConnected(openCodeProviderStatus)}
+                  label={getProviderConnectionLabel(openCodeProviderStatus)}
+                />
+              </div>
+
+              <div className="space-y-5">
+                <label htmlFor="opencode-binary-path" className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">OpenCode binary path</span>
+                  <Input
+                    id="opencode-binary-path"
+                    value={openCodeBinaryPath}
+                    onChange={(event) => updateSettings({ opencodeBinaryPath: event.target.value })}
+                    placeholder="opencode"
+                    spellCheck={false}
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    Leave blank to use <code>opencode</code> from your PATH.
+                  </span>
+                </label>
+
+                <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <p>
+                    Visible delegated providers:{" "}
+                    <span className="font-medium text-foreground">
+                      {openCodeCatalogQuery.isLoading ? "Loading..." : visibleOpenCodeDelegatedProviders.length}
+                    </span>
+                    {" / "}
+                    <span className="font-medium text-foreground">
+                      {openCodeCatalogQuery.isLoading ? "..." : openCodeDelegatedProviders.length}
+                    </span>
+                    {" · "}Models:{" "}
+                    <span className="font-medium text-foreground">{openCodeModelCount}</span>
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() => setIsAddOpenCodeDelegateDialogOpen(true)}
+                    >
+                      <PlusIcon className="size-3.5" />
+                      Add Delegate
+                    </Button>
+                    <Button size="xs" variant="outline" onClick={() => void refreshOpenCodeCatalog()}>
+                      Refresh OpenCode catalog
+                    </Button>
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() => updateSettings({ opencodeBinaryPath: defaults.opencodeBinaryPath })}
+                    >
+                      Reset OpenCode path
+                    </Button>
+                  </div>
+                </div>
+
+                {openCodeCatalogQuery.error ? (
+                  <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-3 text-xs text-destructive">
+                    {openCodeCatalogQuery.error instanceof Error
+                      ? openCodeCatalogQuery.error.message
+                      : "Failed to load the OpenCode catalog."}
+                  </div>
+                ) : null}
+
+                <div className="space-y-3">
+                  {visibleOpenCodeDelegatedProviders.map((provider) => {
+                    const authError = openCodeAuthErrorByProvider[provider.id];
+                    const isBusy = openCodeAuthBusyByProvider[provider.id] ?? false;
+                    return (
+                      <div
+                        key={provider.id}
+                        className="rounded-xl border border-border bg-background/50 p-4"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="text-sm font-medium text-foreground">{provider.name}</h3>
+                              <span
+                                className={
+                                  provider.connected
+                                    ? "rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600"
+                                    : "rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                                }
+                              >
+                                {provider.connected ? "Connected" : "Not connected"}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Provider ID: <code>{provider.id}</code>
+                              {provider.defaultModelSlug ? (
+                                <>
+                                  {" · "}Default model: <code>{provider.defaultModelSlug}</code>
+                                </>
+                              ) : null}
+                            </p>
+                          </div>
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            onClick={() => removeOpenCodeDelegate(provider.id)}
+                          >
+                            <Trash2Icon className="size-3.5" />
+                            Remove delegate
+                          </Button>
+                        </div>
+
+                        <div className="mt-4 space-y-3">
+                          {provider.authMethods.map((method, methodIndex) =>
+                            method.type === "api" ? (
+                              <div
+                                key={`${provider.id}:${method.type}:${method.label}`}
+                                className="space-y-2"
+                              >
+                                <label className="block space-y-1">
+                                  <span className="text-xs font-medium text-foreground">{method.label}</span>
+                                  <Input
+                                    type="password"
+                                    value={openCodeApiKeysByProvider[provider.id] ?? ""}
+                                    onChange={(event) =>
+                                      setOpenCodeApiKeysByProvider((existing) => ({
+                                        ...existing,
+                                        [provider.id]: event.target.value,
+                                      }))
+                                    }
+                                    placeholder="Paste provider API key"
+                                    spellCheck={false}
+                                  />
+                                </label>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={isBusy}
+                                  onClick={() => void saveOpenCodeApiKey(provider.id)}
+                                >
+                                  Save API key
+                                </Button>
+                              </div>
+                            ) : (
+                              <div
+                                key={`${provider.id}:${method.type}:${method.label}`}
+                                className="space-y-2"
+                              >
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-xs font-medium text-foreground">{method.label}</span>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={isBusy}
+                                    onClick={() => void startOpenCodeOauth(provider.id, methodIndex)}
+                                  >
+                                    Start OAuth
+                                  </Button>
+                                </div>
+                                <div className="flex flex-col gap-2 sm:flex-row">
+                                  <Input
+                                    value={openCodeOauthCodesByProvider[provider.id] ?? ""}
+                                    onChange={(event) =>
+                                      setOpenCodeOauthCodesByProvider((existing) => ({
+                                        ...existing,
+                                        [provider.id]: event.target.value,
+                                      }))
+                                    }
+                                    placeholder="Paste OAuth code if required"
+                                    spellCheck={false}
+                                  />
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={isBusy}
+                                    onClick={() => void completeOpenCodeOauth(provider.id, methodIndex)}
+                                  >
+                                    Complete OAuth
+                                  </Button>
+                                </div>
+                              </div>
+                            ),
+                          )}
+
+                          {provider.authMethods.length === 0 ? (
+                            <div className="rounded-lg border border-dashed border-border px-3 py-3 text-xs text-muted-foreground">
+                              No explicit auth methods reported for this delegated provider.
+                            </div>
+                          ) : null}
+
+                          {authError ? (
+                            <p className="text-xs text-destructive">{authError}</p>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {visibleOpenCodeDelegatedProviders.length === 0 && !openCodeCatalogQuery.isLoading ? (
+                    <div className="rounded-lg border border-dashed border-border px-3 py-4 text-xs text-muted-foreground">
+                      No delegates are currently shown in Preferences. Use <span className="font-medium text-foreground">Add Delegate</span> to configure one.
+                    </div>
+                  ) : null}
+                </div>
+
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-4">
+                <h2 className="text-sm font-medium text-foreground">JCodeMunch</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Optional project context retrieval. When enabled, T3 asks JCodeMunch for a compact
+                  semantic code context before sending a turn, so models can stay more token efficient.
+                </p>
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-background/50 px-4 py-3">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-foreground">Enable JCodeMunch retrieval</p>
+                    <p className="text-xs text-muted-foreground">
+                      Turns continue to work normally when this is off or unavailable.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={jcodemunchEnabled}
+                    onCheckedChange={(checked) => updateSettings({ jcodemunchEnabled: checked })}
+                  />
+                </div>
+
+                <label htmlFor="jcodemunch-binary-path" className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">JCodeMunch executable path</span>
+                  <Input
+                    id="jcodemunch-binary-path"
+                    value={jcodemunchBinaryPath}
+                    onChange={(event) =>
+                      updateSettings({ jcodemunchBinaryPath: event.target.value })
+                    }
+                    placeholder="/absolute/path/to/jcodemunch-mcp"
+                    spellCheck={false}
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    Point this at the JCodeMunch MCP server executable or wrapper script. T3 only
+                    uses it when the integration is enabled.
+                  </span>
+                </label>
+
+                <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <p>
+                    Status:{" "}
+                    <span className="font-medium text-foreground">
+                      {jcodemunchEnabled
+                        ? jcodemunchBinaryPath.trim()
+                          ? "Enabled"
+                          : "Enabled, but binary path missing"
+                        : "Disabled"}
+                    </span>
+                  </p>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() =>
+                      updateSettings({
+                        jcodemunchEnabled: defaults.jcodemunchEnabled,
+                        jcodemunchBinaryPath: defaults.jcodemunchBinaryPath,
+                      })
+                    }
+                  >
+                    Reset JCodeMunch settings
+                  </Button>
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-4">
                 <h2 className="text-sm font-medium text-foreground">Models</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
                   Save additional provider model slugs so they appear in the chat model picker and
-                  `/model` command suggestions.
+                  `/model` command suggestions. OpenCode delegate models are managed here by
+                  delegate instead of through the generic OpenCode settings.
                 </p>
               </div>
 
@@ -1112,6 +1764,114 @@ function SettingsRouteView() {
                     </div>
                   );
                 })}
+
+                <div className="rounded-xl border border-border bg-background/50 p-4">
+                  <div className="mb-4">
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-medium text-foreground">OpenRouter</h3>
+                      <span
+                        className={
+                          openRouterProviderConnected
+                            ? "rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600"
+                            : "rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                        }
+                      >
+                        {openRouterProviderConnected ? "Connected" : "API key not verified"}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Add the OpenRouter model slugs you want T3 to expose through OpenCode. Use
+                      the OpenRouter website format <code>provider:model</code>. T3 adds the
+                      OpenRouter prefix internally.
+                    </p>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+                      <label htmlFor="openrouter-model-slug" className="block flex-1 space-y-1">
+                        <span className="text-xs font-medium text-foreground">
+                          OpenRouter model slug
+                        </span>
+                        <Input
+                          id="openrouter-model-slug"
+                          value={openRouterModelInput}
+                          onChange={(event) => {
+                            setOpenRouterModelInput(event.target.value);
+                            if (openRouterModelError) {
+                              setOpenRouterModelError(null);
+                            }
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter") return;
+                            event.preventDefault();
+                            addOpenRouterModel();
+                          }}
+                          placeholder="openai:gpt-4.1-mini"
+                          spellCheck={false}
+                        />
+                        <span className="text-xs text-muted-foreground">
+                          Example: <code>anthropic:claude-3.7-sonnet</code>
+                        </span>
+                      </label>
+
+                      <Button className="sm:mt-6" type="button" onClick={addOpenRouterModel}>
+                        Add OpenRouter model
+                      </Button>
+                    </div>
+
+                    {openRouterModelError ? (
+                      <p className="text-xs text-destructive">{openRouterModelError}</p>
+                    ) : null}
+
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                        <p>Saved OpenRouter models: {openRouterCustomModels.length}</p>
+                        {openRouterCustomModels.length > 0 ? (
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            onClick={() =>
+                              updateSettings({
+                                customOpenCodeModels: settings.customOpenCodeModels.filter(
+                                  (slug) => !slug.startsWith(OPENROUTER_MODEL_PREFIX),
+                                ),
+                              })
+                            }
+                          >
+                            Reset OpenRouter models
+                          </Button>
+                        ) : null}
+                      </div>
+
+                      {openRouterCustomModels.length > 0 ? (
+                        <div className="space-y-2">
+                          {openRouterCustomModels.map((slug) => (
+                            <div
+                              key={slug}
+                              className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2"
+                            >
+                              <code className="min-w-0 flex-1 truncate text-xs text-foreground">
+                                {stripOpenRouterModelPrefix(slug)}
+                              </code>
+                              <Button
+                                size="xs"
+                                variant="ghost"
+                                onClick={() => removeOpenRouterModel(slug)}
+                              >
+                                Remove
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="rounded-lg border border-dashed border-border bg-background px-3 py-4 text-xs text-muted-foreground">
+                          No OpenRouter models are currently exposed in T3. Add the ones you want
+                          to use here.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
             </section>
 
